@@ -1,0 +1,1448 @@
+from django.test import TestCase
+from django.contrib.auth import get_user_model
+from rest_framework.test import APIClient
+from rest_framework import status
+from decimal import Decimal
+from datetime import date
+from unittest.mock import patch, MagicMock
+from .models import Category, Transaction, Budget
+from .services.gemini import GeminiService, GeminiServiceError, get_gemini_service, reset_gemini_service
+
+User = get_user_model()
+
+
+class CategoryAPITestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category = Category.objects.create(name='Food', description='Food expenses')
+
+    def test_list_categories_unauthenticated(self):
+        response = self.client.get('/api/categories/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_create_category_authenticated(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/categories/', {'name': 'Transport', 'description': 'Transport costs'})
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['name'], 'Transport')
+
+    def test_create_category_unauthenticated(self):
+        response = self.client.post('/api/categories/', {'name': 'Transport'})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_retrieve_category(self):
+        response = self.client.get(f'/api/categories/{self.category.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['name'], 'Food')
+
+    def test_update_category_authenticated(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.patch(f'/api/categories/{self.category.id}/', {'description': 'Updated desc'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['description'], 'Updated desc')
+
+
+class TransactionAPITestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category = Category.objects.create(name='Food', description='Food expenses')
+        self.other_category = Category.objects.create(name='Transport', description='Transport costs')
+        self.user_transaction = Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('50.00'),
+            transaction_type='expense',
+            category=self.category,
+            description='Lunch',
+            transaction_date=date(2024, 1, 15)
+        )
+        self.other_user_transaction = Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('100.00'),
+            transaction_type='income',
+            category=self.category,
+            description='Salary',
+            transaction_date=date(2024, 1, 10)
+        )
+
+    def test_create_transaction(self):
+        self.client.force_authenticate(user=self.user)
+        data = {
+            'amount': '25.50',
+            'transaction_type': 'expense',
+            'category': self.category.id,
+            'description': 'Coffee',
+            'transaction_date': '2024-01-20'
+        }
+        response = self.client.post('/api/transactions/', data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Decimal(response.data['amount']), Decimal('25.50'))
+        self.assertEqual(response.data['transaction_type'], 'expense')
+        self.assertEqual(response.data['user'], self.user.id)
+
+    def test_create_transaction_invalid_amount(self):
+        self.client.force_authenticate(user=self.user)
+        data = {
+            'amount': '0',
+            'transaction_type': 'expense',
+            'category': self.category.id,
+            'transaction_date': '2024-01-20'
+        }
+        response = self.client.post('/api/transactions/', data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('amount', response.data)
+
+    def test_create_transaction_invalid_type(self):
+        self.client.force_authenticate(user=self.user)
+        data = {
+            'amount': '25.50',
+            'transaction_type': 'invalid',
+            'category': self.category.id,
+            'transaction_date': '2024-01-20'
+        }
+        response = self.client.post('/api/transactions/', data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('transaction_type', response.data)
+
+    def test_create_transaction_missing_category(self):
+        self.client.force_authenticate(user=self.user)
+        data = {
+            'amount': '25.50',
+            'transaction_type': 'expense',
+            'transaction_date': '2024-01-20'
+        }
+        response = self.client.post('/api/transactions/', data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('category', response.data)
+
+    def test_list_user_transactions(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/transactions/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['id'], self.user_transaction.id)
+
+    def test_list_other_user_transactions_forbidden(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/transactions/')
+        other_ids = [t['id'] for t in response.data]
+        self.assertNotIn(self.other_user_transaction.id, other_ids)
+
+    def test_retrieve_own_transaction(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(f'/api/transactions/{self.user_transaction.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['id'], self.user_transaction.id)
+
+    def test_retrieve_other_user_transaction_forbidden(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(f'/api/transactions/{self.other_user_transaction.id}/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_update_own_transaction(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.patch(
+            f'/api/transactions/{self.user_transaction.id}/',
+            {'description': 'Updated lunch'}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['description'], 'Updated lunch')
+
+    def test_update_other_user_transaction_forbidden(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.patch(
+            f'/api/transactions/{self.other_user_transaction.id}/',
+            {'description': 'Hacked'}
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_delete_own_transaction(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.delete(f'/api/transactions/{self.user_transaction.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Transaction.objects.filter(id=self.user_transaction.id).exists())
+
+    def test_delete_other_user_transaction_forbidden(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.delete(f'/api/transactions/{self.other_user_transaction.id}/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_unauthenticated_access_denied(self):
+        response = self.client.get('/api/transactions/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class BudgetAPITestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category = Category.objects.create(name='Food', description='Food expenses')
+        self.other_category = Category.objects.create(name='Transport', description='Transport costs')
+        self.user_budget = Budget.objects.create(
+            user=self.user,
+            category=self.category,
+            amount=Decimal('500.00'),
+            month=date(2024, 1, 1)
+        )
+        self.other_user_budget = Budget.objects.create(
+            user=self.other_user,
+            category=self.category,
+            amount=Decimal('1000.00'),
+            month=date(2024, 1, 1)
+        )
+
+    def test_create_budget(self):
+        self.client.force_authenticate(user=self.user)
+        data = {
+            'category': self.other_category.id,
+            'amount': '300.00',
+            'month': '2024-02-01'
+        }
+        response = self.client.post('/api/budgets/', data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Decimal(response.data['amount']), Decimal('300.00'))
+        self.assertEqual(response.data['user'], self.user.id)
+
+    def test_create_budget_invalid_amount(self):
+        self.client.force_authenticate(user=self.user)
+        data = {
+            'category': self.category.id,
+            'amount': '0',
+            'month': '2024-02-01'
+        }
+        response = self.client.post('/api/budgets/', data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('amount', response.data)
+
+    def test_create_budget_invalid_month(self):
+        self.client.force_authenticate(user=self.user)
+        data = {
+            'category': self.category.id,
+            'amount': '300.00',
+            'month': '2024-02-15'
+        }
+        response = self.client.post('/api/budgets/', data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('month', response.data)
+
+    def test_create_duplicate_budget_forbidden(self):
+        self.client.force_authenticate(user=self.user)
+        data = {
+            'category': self.category.id,
+            'amount': '300.00',
+            'month': '2024-01-01'
+        }
+        response = self.client.post('/api/budgets/', data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('non_field_errors', response.data)
+
+    def test_list_user_budgets(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/budgets/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['id'], self.user_budget.id)
+
+    def test_retrieve_own_budget(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(f'/api/budgets/{self.user_budget.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['id'], self.user_budget.id)
+
+    def test_retrieve_other_user_budget_forbidden(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(f'/api/budgets/{self.other_user_budget.id}/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_update_own_budget(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.patch(
+            f'/api/budgets/{self.user_budget.id}/',
+            {'amount': '600.00'}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(response.data['amount']), Decimal('600.00'))
+
+    def test_delete_own_budget(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.delete(f'/api/budgets/{self.user_budget.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Budget.objects.filter(id=self.user_budget.id).exists())
+
+    def test_unauthenticated_access_denied(self):
+        response = self.client.get('/api/budgets/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class GeminiServiceTestCase(TestCase):
+    def setUp(self):
+        self.original_env = os.environ.get('GEMINI_API_KEY')
+        os.environ['GEMINI_API_KEY'] = 'test-api-key'
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def tearDown(self):
+        if self.original_env is not None:
+            os.environ['GEMINI_API_KEY'] = self.original_env
+        else:
+            os.environ.pop('GEMINI_API_KEY', None)
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def test_gemini_service_requires_api_key(self):
+        os.environ.pop('GEMINI_API_KEY', None)
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+        with self.assertRaises(GeminiServiceError) as ctx:
+            get_gemini_service()
+        self.assertIn('GEMINI_API_KEY not configured', str(ctx.exception))
+
+    def test_send_prompt_success(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = 'Hello! This is a test response.'
+        mock_client.models.generate_content.return_value = mock_response
+
+        service = GeminiService(client=mock_client)
+        result = service.send_prompt('Say hello')
+
+        self.assertEqual(result, 'Hello! This is a test response.')
+        mock_client.models.generate_content.assert_called_once()
+
+    def test_send_prompt_empty_response(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = ''
+        mock_client.models.generate_content.return_value = mock_response
+
+        service = GeminiService(client=mock_client)
+        with self.assertRaises(GeminiServiceError) as ctx:
+            service.send_prompt('Say hello')
+        self.assertIn('Empty response', str(ctx.exception))
+
+    def test_send_prompt_api_error(self):
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = Exception('API quota exceeded')
+
+        service = GeminiService(client=mock_client)
+        with self.assertRaises(GeminiServiceError) as ctx:
+            service.send_prompt('Say hello')
+        self.assertIn('Gemini API error', str(ctx.exception))
+
+    def test_send_prompt_empty_prompt(self):
+        service = GeminiService(client=MagicMock())
+        with self.assertRaises(GeminiServiceError) as ctx:
+            service.send_prompt('')
+        self.assertIn('Prompt cannot be empty', str(ctx.exception))
+
+        with self.assertRaises(GeminiServiceError) as ctx:
+            service.send_prompt('   ')
+        self.assertIn('Prompt cannot be empty', str(ctx.exception))
+
+
+import os
+
+
+class GeminiTestViewTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        os.environ['GEMINI_API_KEY'] = 'test-api-key'
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def tearDown(self):
+        os.environ.pop('GEMINI_API_KEY', None)
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def test_authenticated_request_success(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.views.get_gemini_service') as mock_get_service:
+            mock_service = MagicMock()
+            mock_service.send_prompt.return_value = 'Hello from Gemini!'
+            mock_get_service.return_value = mock_service
+
+            response = self.client.post('/api/ai/test/', {'message': 'Say hello'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['response'], 'Hello from Gemini!')
+
+    def test_unauthenticated_request_denied(self):
+        response = self.client.post('/api/ai/test/', {'message': 'Say hello'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_missing_message(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/ai/test/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('detail', response.data)
+        self.assertIn('Message is required', response.data['detail'])
+
+    def test_empty_message(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/ai/test/', {'message': '   '}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('detail', response.data)
+        self.assertIn('Message is required', response.data['detail'])
+
+    def test_gemini_service_error_handled(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.views.get_gemini_service') as mock_get_service:
+            mock_service = MagicMock()
+            mock_service.send_prompt.side_effect = GeminiServiceError('API quota exceeded')
+            mock_get_service.return_value = mock_service
+
+            response = self.client.post('/api/ai/test/', {'message': 'Say hello'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertIn('detail', response.data)
+        self.assertIn('API quota exceeded', response.data['detail'])
+
+
+class GetTransactionsToolTestCase(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category_food = Category.objects.create(name='Food', description='Food expenses')
+        self.category_transport = Category.objects.create(name='Transport', description='Transport costs')
+
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('50.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Lunch',
+            transaction_date=date(2024, 1, 15)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('100.00'),
+            transaction_type='income',
+            category=self.category_transport,
+            description='Salary',
+            transaction_date=date(2024, 1, 20)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('25.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Coffee',
+            transaction_date=date(2024, 2, 10)
+        )
+        Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('200.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Other user expense',
+            transaction_date=date(2024, 1, 15)
+        )
+
+    def test_get_transactions_authenticated_user(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user)
+        self.assertEqual(len(results), 3)
+        for txn in results:
+            self.assertIn('amount', txn)
+            self.assertIn('transaction_type', txn)
+            self.assertIn('category', txn)
+            self.assertIn('description', txn)
+            self.assertIn('transaction_date', txn)
+
+    def test_get_transactions_user_isolation(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user)
+        for txn in results:
+            self.assertNotEqual(txn['description'], 'Other user expense')
+
+    def test_get_transactions_filter_by_type_expense(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, transaction_type='expense')
+        self.assertEqual(len(results), 2)
+        for txn in results:
+            self.assertEqual(txn['transaction_type'], 'expense')
+
+    def test_get_transactions_filter_by_type_income(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, transaction_type='income')
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['transaction_type'], 'income')
+        self.assertEqual(results[0]['description'], 'Salary')
+
+    def test_get_transactions_filter_by_category(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, category='Food')
+        self.assertEqual(len(results), 2)
+        for txn in results:
+            self.assertEqual(txn['category'], 'Food')
+
+    def test_get_transactions_filter_by_category_case_insensitive(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, category='food')
+        self.assertEqual(len(results), 2)
+
+    def test_get_transactions_filter_by_date_range(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, start_date='2024-01-01', end_date='2024-01-31')
+        self.assertEqual(len(results), 2)
+        for txn in results:
+            self.assertTrue('2024-01' in txn['transaction_date'])
+
+    def test_get_transactions_filter_by_start_date_only(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, start_date='2024-02-01')
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['description'], 'Coffee')
+
+    def test_get_transactions_filter_by_end_date_only(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, end_date='2024-01-31')
+        self.assertEqual(len(results), 2)
+
+    def test_get_transactions_limit(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, limit=2)
+        self.assertEqual(len(results), 2)
+
+    def test_get_transactions_limit_max_cap(self):
+        from finance.tools.transactions import get_transactions, MAX_LIMIT
+        results = get_transactions(self.user, limit=MAX_LIMIT + 50)
+        self.assertEqual(len(results), 3)
+
+    def test_get_transactions_empty_result(self):
+        from finance.tools.transactions import get_transactions
+        results = get_transactions(self.user, start_date='2030-01-01')
+        self.assertEqual(len(results), 0)
+
+    def test_get_transactions_invalid_transaction_type(self):
+        from finance.tools.transactions import get_transactions, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_transactions(self.user, transaction_type='invalid')
+        self.assertIn('Invalid transaction_type', str(ctx.exception))
+
+    def test_get_transactions_invalid_category(self):
+        from finance.tools.transactions import get_transactions, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_transactions(self.user, category='NonExistent')
+        self.assertIn('Category not found', str(ctx.exception))
+
+    def test_get_transactions_invalid_date_format(self):
+        from finance.tools.transactions import get_transactions, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_transactions(self.user, start_date='invalid-date')
+        self.assertIn('Invalid start_date', str(ctx.exception))
+
+    def test_get_transactions_start_after_end(self):
+        from finance.tools.transactions import get_transactions, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_transactions(self.user, start_date='2024-02-01', end_date='2024-01-01')
+        self.assertIn('start_date cannot be after end_date', str(ctx.exception))
+
+    def test_get_transactions_invalid_limit(self):
+        from finance.tools.transactions import get_transactions, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_transactions(self.user, limit=0)
+        self.assertIn('Limit must be greater than zero', str(ctx.exception))
+
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_transactions(self.user, limit=-5)
+        self.assertIn('Limit must be greater than zero', str(ctx.exception))
+
+    def test_get_transactions_unauthenticated_user_raises(self):
+        from finance.tools.transactions import get_transactions, TransactionToolError
+        class MockUser:
+            is_authenticated = False
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_transactions(MockUser())
+        self.assertIn('Authenticated user required', str(ctx.exception))
+
+    def test_get_transactions_none_user_raises(self):
+        from finance.tools.transactions import get_transactions, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_transactions(None)
+        self.assertIn('Authenticated user required', str(ctx.exception))
+
+
+class GeminiChatViewTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category_food = Category.objects.create(name='Food', description='Food expenses')
+        self.category_transport = Category.objects.create(name='Transport', description='Transport costs')
+
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('50.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Lunch',
+            transaction_date=date(2024, 1, 15)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('100.00'),
+            transaction_type='income',
+            category=self.category_transport,
+            description='Salary',
+            transaction_date=date(2024, 1, 20)
+        )
+        Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('200.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Other user expense',
+            transaction_date=date(2024, 1, 15)
+        )
+
+        os.environ['GEMINI_API_KEY'] = 'test-api-key'
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def tearDown(self):
+        os.environ.pop('GEMINI_API_KEY', None)
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def _create_function_call(self, name, args):
+        fc = MagicMock()
+        fc.name = name
+        fc.args = args
+        return fc
+
+    def _mock_gemini_response(self, mock_client, text_response=None, function_calls=None):
+        mock_response = MagicMock()
+        mock_candidate = MagicMock()
+        mock_content = MagicMock()
+        mock_parts = []
+
+        if text_response:
+            mock_text_part = MagicMock()
+            mock_text_part.text = text_response
+            mock_text_part.function_call = None
+            mock_parts.append(mock_text_part)
+
+        if function_calls:
+            for fc in function_calls:
+                mock_fc_part = MagicMock()
+                mock_fc_part.function_call = fc
+                mock_fc_part.text = None
+                mock_parts.append(mock_fc_part)
+
+        mock_content.parts = mock_parts
+        mock_candidate.content = mock_content
+        mock_response.candidates = [mock_candidate]
+        return mock_response
+
+    def test_authenticated_chat_success(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+            mock_response = self._mock_gemini_response(mock_client, text_response='Hello! How can I help?')
+            mock_client.models.generate_content.return_value = mock_response
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Hello'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['response'], 'Hello! How can I help?')
+        mock_client.models.generate_content.assert_called_once()
+
+    def test_unauthenticated_chat_denied(self):
+        response = self.client.post('/api/ai/chat/', {'message': 'Hello'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_missing_message(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/ai/chat/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('detail', response.data)
+        self.assertIn('Message is required', response.data['detail'])
+
+    def test_empty_message(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/ai/chat/', {'message': '   '}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('detail', response.data)
+        self.assertIn('Message is required', response.data['detail'])
+
+    def test_gemini_normal_response_without_tool(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+            mock_response = self._mock_gemini_response(mock_client, text_response='I cannot answer that.')
+            mock_client.models.generate_content.return_value = mock_response
+
+            response = self.client.post('/api/ai/chat/', {'message': 'What is the meaning of life?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['response'], 'I cannot answer that.')
+
+    def test_gemini_requests_get_transactions(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_transactions', {'category': 'Food'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'You spent $50.00 on food.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'What did I spend on food?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('50.00', response.data['response'])
+        self.assertIn('food', response.data['response'].lower())
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+
+    def test_tool_executed_with_request_user(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_transactions', {'category': 'Food'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'You spent $50.00 on food (Lunch).'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'What did I spend on food?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Verify only user's transactions were returned (not other_user's)
+        self.assertIn('50.00', response.data['response'])
+        self.assertNotIn('200.00', response.data['response'])
+
+    def test_model_cannot_specify_another_user(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    # Model tries to pass user_id - should be ignored
+                    fc = self._create_function_call('get_transactions', {'category': 'Food', 'user_id': self.other_user.id})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'You spent $50.00 on food.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show me food expenses'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Should only see user's own transactions
+        self.assertIn('50.00', response.data['response'])
+        self.assertNotIn('200.00', response.data['response'])
+
+    def test_tool_result_sent_back_to_gemini(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_transactions', {'transaction_type': 'expense'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                elif call_count[0] == 2:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'You have 2 expenses totaling $75.00.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Done.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show my expenses'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+        self.assertIn('expense', response.data['response'].lower())
+
+    def test_malformed_tool_arguments(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    # Invalid category name
+                    fc = self._create_function_call('get_transactions', {'category': 'NonExistentCategory'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Category not found.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show me invalid category'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Tool should handle error gracefully and return to Gemini
+        self.assertIn('category', response.data['response'].lower())
+
+    def test_gemini_api_failure(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+            mock_client.models.generate_content.side_effect = Exception('API quota exceeded')
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Hello'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertIn('detail', response.data)
+        self.assertIn('API quota exceeded', response.data['detail'])
+
+    def test_max_tool_iterations(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            # Always return function calls, never a final response
+            def side_effect(*args, **kwargs):
+                fc = self._create_function_call('get_transactions', {'category': 'Food'})
+                mc = MagicMock()
+                mp = MagicMock()
+                fc_part = MagicMock()
+                fc_part.function_call = fc
+                fc_part.text = None
+                mp.parts = [fc_part]
+                mc.content = mp
+                resp = MagicMock()
+                resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Loop forever'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertIn('detail', response.data)
+        self.assertIn('Max tool iterations reached', response.data['detail'])
+
+
+class GetFinancialSummaryToolTestCase(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category_food = Category.objects.create(name='Food', description='Food expenses')
+        self.category_transport = Category.objects.create(name='Transport', description='Transport costs')
+        self.category_salary = Category.objects.create(name='Salary', description='Salary income')
+
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('50.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Lunch',
+            transaction_date=date(2024, 1, 15)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('100.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='Salary',
+            transaction_date=date(2024, 1, 20)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('25.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Coffee',
+            transaction_date=date(2024, 2, 10)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('200.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='Bonus',
+            transaction_date=date(2024, 2, 15)
+        )
+        Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('500.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Other user expense',
+            transaction_date=date(2024, 1, 15)
+        )
+
+    def test_get_financial_summary_correct_income(self):
+        from finance.tools.transactions import get_financial_summary
+        result = get_financial_summary(self.user)
+        self.assertEqual(result['total_income'], '300.00')
+
+    def test_get_financial_summary_correct_expenses(self):
+        from finance.tools.transactions import get_financial_summary
+        result = get_financial_summary(self.user)
+        self.assertEqual(result['total_expenses'], '75.00')
+
+    def test_get_financial_summary_correct_net_balance(self):
+        from finance.tools.transactions import get_financial_summary
+        result = get_financial_summary(self.user)
+        self.assertEqual(result['net_balance'], '225.00')
+
+    def test_get_financial_summary_correct_savings_rate(self):
+        from finance.tools.transactions import get_financial_summary
+        result = get_financial_summary(self.user)
+        self.assertEqual(result['savings_rate'], '75.00')
+
+    def test_get_financial_summary_zero_income(self):
+        from finance.tools.transactions import get_financial_summary
+        user_no_income = User.objects.create_user(username='noincome', password='testpass123')
+        Transaction.objects.create(
+            user=user_no_income,
+            amount=Decimal('50.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Expense only',
+            transaction_date=date(2024, 1, 15)
+        )
+        result = get_financial_summary(user_no_income)
+        self.assertEqual(result['total_income'], '0.00')
+        self.assertEqual(result['total_expenses'], '50.00')
+        self.assertEqual(result['net_balance'], '-50.00')
+        self.assertEqual(result['savings_rate'], '0.00')
+
+    def test_get_financial_summary_date_filtering_start_date(self):
+        from finance.tools.transactions import get_financial_summary
+        result = get_financial_summary(self.user, start_date='2024-02-01')
+        self.assertEqual(result['total_income'], '200.00')
+        self.assertEqual(result['total_expenses'], '25.00')
+        self.assertEqual(result['net_balance'], '175.00')
+        self.assertEqual(result['savings_rate'], '87.50')
+
+    def test_get_financial_summary_date_filtering_end_date(self):
+        from finance.tools.transactions import get_financial_summary
+        result = get_financial_summary(self.user, end_date='2024-01-31')
+        self.assertEqual(result['total_income'], '100.00')
+        self.assertEqual(result['total_expenses'], '50.00')
+        self.assertEqual(result['net_balance'], '50.00')
+        self.assertEqual(result['savings_rate'], '50.00')
+
+    def test_get_financial_summary_date_filtering_range(self):
+        from finance.tools.transactions import get_financial_summary
+        result = get_financial_summary(self.user, start_date='2024-01-01', end_date='2024-01-31')
+        self.assertEqual(result['total_income'], '100.00')
+        self.assertEqual(result['total_expenses'], '50.00')
+
+    def test_get_financial_summary_user_isolation(self):
+        from finance.tools.transactions import get_financial_summary
+        result = get_financial_summary(self.user)
+        self.assertEqual(result['total_income'], '300.00')
+        self.assertEqual(result['total_expenses'], '75.00')
+        other_result = get_financial_summary(self.other_user)
+        self.assertEqual(other_result['total_income'], '0.00')
+        self.assertEqual(other_result['total_expenses'], '500.00')
+
+    def test_get_financial_summary_invalid_date_format(self):
+        from finance.tools.transactions import get_financial_summary, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_financial_summary(self.user, start_date='invalid-date')
+        self.assertIn('Invalid start_date', str(ctx.exception))
+
+    def test_get_financial_summary_start_after_end(self):
+        from finance.tools.transactions import get_financial_summary, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_financial_summary(self.user, start_date='2024-02-01', end_date='2024-01-01')
+        self.assertIn('start_date cannot be after end_date', str(ctx.exception))
+
+    def test_get_financial_summary_unauthenticated_user_raises(self):
+        from finance.tools.transactions import get_financial_summary, TransactionToolError
+        class MockUser:
+            is_authenticated = False
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_financial_summary(MockUser())
+        self.assertIn('Authenticated user required', str(ctx.exception))
+
+    def test_get_financial_summary_none_user_raises(self):
+        from finance.tools.transactions import get_financial_summary, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_financial_summary(None)
+        self.assertIn('Authenticated user required', str(ctx.exception))
+
+    def test_get_financial_summary_empty_result(self):
+        from finance.tools.transactions import get_financial_summary
+        empty_user = User.objects.create_user(username='emptyuser', password='testpass123')
+        result = get_financial_summary(empty_user)
+        self.assertEqual(result['total_income'], '0.00')
+        self.assertEqual(result['total_expenses'], '0.00')
+        self.assertEqual(result['net_balance'], '0.00')
+        self.assertEqual(result['savings_rate'], '0.00')
+
+    def test_get_financial_summary_uses_decimal_precision(self):
+        from finance.tools.transactions import get_financial_summary
+        user = User.objects.create_user(username='preciseuser', password='testpass123')
+        Transaction.objects.create(
+            user=user,
+            amount=Decimal('100.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='Income',
+            transaction_date=date(2024, 1, 1)
+        )
+        Transaction.objects.create(
+            user=user,
+            amount=Decimal('33.33'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Expense',
+            transaction_date=date(2024, 1, 2)
+        )
+        result = get_financial_summary(user)
+        self.assertEqual(result['total_income'], '100.00')
+        self.assertEqual(result['total_expenses'], '33.33')
+        self.assertEqual(result['net_balance'], '66.67')
+        self.assertEqual(result['savings_rate'], '66.67')
+
+
+class GeminiFinancialSummaryToolTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category_food = Category.objects.create(name='Food', description='Food expenses')
+        self.category_transport = Category.objects.create(name='Transport', description='Transport costs')
+        self.category_salary = Category.objects.create(name='Salary', description='Salary income')
+
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('50.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Lunch',
+            transaction_date=date(2024, 1, 15)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('100.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='Salary',
+            transaction_date=date(2024, 1, 20)
+        )
+        Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('200.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Other user expense',
+            transaction_date=date(2024, 1, 15)
+        )
+
+        os.environ['GEMINI_API_KEY'] = 'test-api-key'
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def tearDown(self):
+        os.environ.pop('GEMINI_API_KEY', None)
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def _create_function_call(self, name, args):
+        fc = MagicMock()
+        fc.name = name
+        fc.args = args
+        return fc
+
+    def _mock_gemini_response(self, mock_client, text_response=None, function_calls=None):
+        mock_response = MagicMock()
+        mock_candidate = MagicMock()
+        mock_content = MagicMock()
+        mock_parts = []
+
+        if text_response:
+            mock_text_part = MagicMock()
+            mock_text_part.text = text_response
+            mock_text_part.function_call = None
+            mock_parts.append(mock_text_part)
+
+        if function_calls:
+            for fc in function_calls:
+                mock_fc_part = MagicMock()
+                mock_fc_part.function_call = fc
+                mock_fc_part.text = None
+                mock_parts.append(mock_fc_part)
+
+        mock_content.parts = mock_parts
+        mock_candidate.content = mock_content
+        mock_response.candidates = [mock_candidate]
+        return mock_response
+
+    def test_gemini_requests_get_financial_summary(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_financial_summary', {})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Your total income is $100.00, expenses $50.00, net balance $50.00, savings rate 50%.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'What is my financial summary?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('100.00', response.data['response'])
+        self.assertIn('50.00', response.data['response'])
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+
+    def test_gemini_requests_financial_summary_with_date_filter(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_financial_summary', {'start_date': '2024-01-01', 'end_date': '2024-01-31'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'January summary: income $100.00, expenses $50.00.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'What is my January summary?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('100.00', response.data['response'])
+        self.assertIn('50.00', response.data['response'])
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+
+    def test_financial_summary_tool_executed_with_request_user(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_financial_summary', {})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Your income: $100.00, expenses: $50.00.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show my summary'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('100.00', response.data['response'])
+        self.assertIn('50.00', response.data['response'])
+
+    def test_model_cannot_specify_another_user_in_financial_summary(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_financial_summary', {'user_id': self.other_user.id})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Your income: $100.00, expenses: $50.00.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show my summary'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('100.00', response.data['response'])
+        self.assertIn('50.00', response.data['response'])
+
+    def test_gemini_can_choose_between_tools(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_financial_summary', {})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                elif call_count[0] == 2:
+                    fc = self._create_function_call('get_transactions', {'category': 'Food'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Summary: income $100.00, expenses $50.00. Food expenses: $50.00.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show my summary and food expenses'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_client.models.generate_content.call_count, 3)
+        self.assertIn('income', response.data['response'].lower())
+        self.assertIn('food', response.data['response'].lower())
+
+    def test_both_tools_still_work_independently(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_transactions', {'transaction_type': 'expense'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'You have 2 expenses totaling $75.00.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show my expenses'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+        self.assertIn('75.00', response.data['response'])
