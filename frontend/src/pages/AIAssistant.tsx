@@ -73,7 +73,7 @@ export default function AIAssistant() {
                   </svg>
                 </div>
                 <div>
-                  <h2 className="font-semibold text-text-primary">Finance Assistant</h2>
+                  <h2 className="font-semibold text-text-primary">Finora</h2>
                   <p className="text-xs text-text-secondary">Powered by Nemotron</p>
                 </div>
               </div>
