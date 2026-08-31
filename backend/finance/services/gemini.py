@@ -71,7 +71,26 @@ GET_BUDGET_STATUS_SCHEMA = types.FunctionDeclaration(
     ),
 )
 
-TOOLS = [types.Tool(function_declarations=[GET_TRANSACTIONS_SCHEMA, GET_FINANCIAL_SUMMARY_SCHEMA, GET_BUDGET_STATUS_SCHEMA])]
+COMPARE_MONTHS_SCHEMA = types.FunctionDeclaration(
+    name='compare_months',
+    description='Compare financial metrics between two months including income, expenses, net balance, savings rate, and category-level spending',
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            'current_month': types.Schema(
+                type=types.Type.STRING,
+                description='Current month to compare (YYYY-MM format).',
+            ),
+            'comparison_month': types.Schema(
+                type=types.Type.STRING,
+                description='Month to compare against (YYYY-MM format).',
+            ),
+        },
+        required=['current_month', 'comparison_month'],
+    ),
+)
+
+TOOLS = [types.Tool(function_declarations=[GET_TRANSACTIONS_SCHEMA, GET_FINANCIAL_SUMMARY_SCHEMA, GET_BUDGET_STATUS_SCHEMA, COMPARE_MONTHS_SCHEMA])]
 
 
 class GeminiService:
@@ -109,7 +128,7 @@ class GeminiService:
         if not user or not user.is_authenticated:
             raise GeminiServiceError('Authenticated user required')
 
-        from finance.tools.transactions import get_transactions, get_financial_summary, get_budget_status, TransactionToolError
+        from finance.tools.transactions import get_transactions, get_financial_summary, get_budget_status, compare_months, TransactionToolError
 
         try:
             contents = [prompt]
@@ -191,6 +210,22 @@ class GeminiService:
                             contents.append(types.Content(
                                 parts=[types.Part.from_function_response(
                                     name='get_budget_status',
+                                    response={'result': result_json}
+                                )]
+                            ))
+                        elif func_call.name == 'compare_months':
+                            args = dict(func_call.args) if func_call.args else {}
+                            try:
+                                result = compare_months(user, **args)
+                                result_json = json.dumps(result)
+                            except TransactionToolError as e:
+                                result_json = json.dumps({'error': str(e)})
+                            except Exception as e:
+                                result_json = json.dumps({'error': f'Tool execution failed: {str(e)}'})
+
+                            contents.append(types.Content(
+                                parts=[types.Part.from_function_response(
+                                    name='compare_months',
                                     response={'result': result_json}
                                 )]
                             ))

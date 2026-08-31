@@ -2053,3 +2053,566 @@ class GeminiBudgetStatusToolTestCase(TestCase):
         self.assertEqual(mock_client.models.generate_content.call_count, 2)
         self.assertIn('500.00', response.data['response'])
         self.assertIn('100.00', response.data['response'])
+
+
+class CompareMonthsToolTestCase(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category_food = Category.objects.create(name='Food', description='Food expenses')
+        self.category_transport = Category.objects.create(name='Transport', description='Transport costs')
+        self.category_shopping = Category.objects.create(name='Shopping', description='Shopping expenses')
+        self.category_salary = Category.objects.create(name='Salary', description='Salary income')
+
+        # Current month: 2024-02 (Feb) - higher income and expenses
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('2000.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='February Salary',
+            transaction_date=date(2024, 2, 1)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('500.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='February Groceries',
+            transaction_date=date(2024, 2, 5)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('300.00'),
+            transaction_type='expense',
+            category=self.category_transport,
+            description='February Gas',
+            transaction_date=date(2024, 2, 10)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('200.00'),
+            transaction_type='expense',
+            category=self.category_shopping,
+            description='February Shopping',
+            transaction_date=date(2024, 2, 15)
+        )
+
+        # Comparison month: 2024-01 (Jan) - lower income and expenses
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('1800.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='January Salary',
+            transaction_date=date(2024, 1, 1)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('400.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='January Groceries',
+            transaction_date=date(2024, 1, 5)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('250.00'),
+            transaction_type='expense',
+            category=self.category_transport,
+            description='January Gas',
+            transaction_date=date(2024, 1, 10)
+        )
+
+        # Other user's transactions (for isolation test)
+        Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('1000.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='Other user income',
+            transaction_date=date(2024, 1, 1)
+        )
+
+    def test_compare_months_income_comparison(self):
+        from finance.tools.transactions import compare_months
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        self.assertEqual(result['income']['current'], '2000.00')
+        self.assertEqual(result['income']['comparison'], '1800.00')
+        self.assertEqual(result['income']['change'], '200.00')
+        self.assertEqual(result['income']['change_percentage'], '11.11')
+
+    def test_compare_months_expense_comparison(self):
+        from finance.tools.transactions import compare_months
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        self.assertEqual(result['expenses']['current'], '1000.00')
+        self.assertEqual(result['expenses']['comparison'], '650.00')
+        self.assertEqual(result['expenses']['change'], '350.00')
+        self.assertEqual(result['expenses']['change_percentage'], '53.85')
+
+    def test_compare_months_net_balance_comparison(self):
+        from finance.tools.transactions import compare_months
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        self.assertEqual(result['net_balance']['current'], '1000.00')
+        self.assertEqual(result['net_balance']['comparison'], '1150.00')
+        self.assertEqual(result['net_balance']['change'], '-150.00')
+        self.assertEqual(result['net_balance']['change_percentage'], '-13.04')
+
+    def test_compare_months_savings_rate_comparison(self):
+        from finance.tools.transactions import compare_months
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        # Feb: (2000-1000)/2000 * 100 = 50%
+        # Jan: (1800-650)/1800 * 100 = 63.89%
+        self.assertEqual(result['savings_rate']['current'], '50.00')
+        self.assertEqual(result['savings_rate']['comparison'], '63.89')
+        self.assertEqual(result['savings_rate']['change'], '-13.89')
+
+    def test_compare_months_positive_and_negative_changes(self):
+        from finance.tools.transactions import compare_months
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        # Income increased
+        self.assertTrue(result['income']['change'].startswith('+') or not result['income']['change'].startswith('-'))
+        # Expenses increased
+        self.assertTrue(result['expenses']['change'].startswith('+') or not result['expenses']['change'].startswith('-'))
+        # Net balance decreased
+        self.assertTrue(result['net_balance']['change'].startswith('-'))
+
+    def test_compare_months_category_level_changes(self):
+        from finance.tools.transactions import compare_months
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        categories = {c['category']: c for c in result['categories']}
+        self.assertIn('Food', categories)
+        self.assertIn('Transport', categories)
+        self.assertIn('Shopping', categories)
+
+        food = categories['Food']
+        self.assertEqual(food['current'], '500.00')
+        self.assertEqual(food['comparison'], '400.00')
+        self.assertEqual(food['change'], '100.00')
+        self.assertEqual(food['change_percentage'], '25.00')
+
+        transport = categories['Transport']
+        self.assertEqual(transport['current'], '300.00')
+        self.assertEqual(transport['comparison'], '250.00')
+        self.assertEqual(transport['change'], '50.00')
+        self.assertEqual(transport['change_percentage'], '20.00')
+
+    def test_compare_months_category_present_only_in_current_month(self):
+        from finance.tools.transactions import compare_months
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        categories = {c['category']: c for c in result['categories']}
+        shopping = categories['Shopping']
+        self.assertEqual(shopping['current'], '200.00')
+        self.assertEqual(shopping['comparison'], '0.00')
+        self.assertEqual(shopping['change'], '200.00')
+        self.assertEqual(shopping['change_percentage'], '100.00')
+
+    def test_compare_months_category_present_only_in_comparison_month(self):
+        from finance.tools.transactions import compare_months
+        # Add a category only in comparison month
+        cat_entertainment = Category.objects.create(name='Entertainment', description='Entertainment')
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('100.00'),
+            transaction_type='expense',
+            category=cat_entertainment,
+            description='January Movie',
+            transaction_date=date(2024, 1, 20)
+        )
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        categories = {c['category']: c for c in result['categories']}
+        entertainment = categories['Entertainment']
+        self.assertEqual(entertainment['current'], '0.00')
+        self.assertEqual(entertainment['comparison'], '100.00')
+        self.assertEqual(entertainment['change'], '-100.00')
+        self.assertEqual(entertainment['change_percentage'], '-100.00')
+
+    def test_compare_months_zero_comparison_values(self):
+        from finance.tools.transactions import compare_months
+        user = User.objects.create_user(username='zerouser', password='testpass123')
+        cat = Category.objects.create(name='NewCat', description='New')
+        # Only current month has transactions
+        Transaction.objects.create(
+            user=user,
+            amount=Decimal('500.00'),
+            transaction_type='income',
+            category=cat,
+            description='Income',
+            transaction_date=date(2024, 2, 1)
+        )
+        Transaction.objects.create(
+            user=user,
+            amount=Decimal('100.00'),
+            transaction_type='expense',
+            category=cat,
+            description='Expense',
+            transaction_date=date(2024, 2, 5)
+        )
+        result = compare_months(user, current_month='2024-02', comparison_month='2024-01')
+        self.assertEqual(result['income']['comparison'], '0.00')
+        self.assertEqual(result['income']['change'], '500.00')
+        self.assertEqual(result['income']['change_percentage'], '100.00')
+        self.assertEqual(result['expenses']['comparison'], '0.00')
+        self.assertEqual(result['expenses']['change'], '100.00')
+        self.assertEqual(result['expenses']['change_percentage'], '100.00')
+
+    def test_compare_months_months_with_no_transactions(self):
+        from finance.tools.transactions import compare_months
+        empty_user = User.objects.create_user(username='emptyuser', password='testpass123')
+        result = compare_months(empty_user, current_month='2024-02', comparison_month='2024-01')
+        self.assertEqual(result['income']['current'], '0.00')
+        self.assertEqual(result['income']['comparison'], '0.00')
+        self.assertEqual(result['expenses']['current'], '0.00')
+        self.assertEqual(result['expenses']['comparison'], '0.00')
+        self.assertEqual(result['net_balance']['current'], '0.00')
+        self.assertEqual(result['net_balance']['comparison'], '0.00')
+        self.assertEqual(result['savings_rate']['current'], '0.00')
+        self.assertEqual(result['savings_rate']['comparison'], '0.00')
+        self.assertEqual(result['categories'], [])
+
+    def test_compare_months_invalid_month_format(self):
+        from finance.tools.transactions import compare_months, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            compare_months(self.user, current_month='invalid', comparison_month='2024-01')
+        self.assertIn('Invalid month', str(ctx.exception))
+
+        with self.assertRaises(TransactionToolError) as ctx:
+            compare_months(self.user, current_month='2024-02', comparison_month='invalid')
+        self.assertIn('Invalid month', str(ctx.exception))
+
+        with self.assertRaises(TransactionToolError) as ctx:
+            compare_months(self.user, current_month='2024', comparison_month='2024-01')
+        self.assertIn('Invalid month', str(ctx.exception))
+
+        with self.assertRaises(TransactionToolError) as ctx:
+            compare_months(self.user, current_month='2024-13', comparison_month='2024-01')
+        self.assertIn('Invalid month', str(ctx.exception))
+
+    def test_compare_months_user_isolation(self):
+        from finance.tools.transactions import compare_months
+        result = compare_months(self.user, current_month='2024-02', comparison_month='2024-01')
+        self.assertEqual(result['income']['current'], '2000.00')
+
+        other_result = compare_months(self.other_user, current_month='2024-02', comparison_month='2024-01')
+        self.assertEqual(other_result['income']['current'], '0.00')
+        self.assertEqual(other_result['income']['comparison'], '1000.00')
+
+    def test_compare_months_unauthenticated_user_raises(self):
+        from finance.tools.transactions import compare_months, TransactionToolError
+        class MockUser:
+            is_authenticated = False
+        with self.assertRaises(TransactionToolError) as ctx:
+            compare_months(MockUser(), current_month='2024-02', comparison_month='2024-01')
+        self.assertIn('Authenticated user required', str(ctx.exception))
+
+    def test_compare_months_none_user_raises(self):
+        from finance.tools.transactions import compare_months, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            compare_months(None, current_month='2024-02', comparison_month='2024-01')
+        self.assertIn('Authenticated user required', str(ctx.exception))
+
+    def test_compare_months_uses_decimal_precision(self):
+        from finance.tools.transactions import compare_months
+        user = User.objects.create_user(username='preciseuser', password='testpass123')
+        cat = Category.objects.create(name='Precision', description='Precision')
+        Transaction.objects.create(
+            user=user,
+            amount=Decimal('1000.00'),
+            transaction_type='income',
+            category=cat,
+            description='Income',
+            transaction_date=date(2024, 2, 1)
+        )
+        Transaction.objects.create(
+            user=user,
+            amount=Decimal('333.33'),
+            transaction_type='expense',
+            category=cat,
+            description='Expense',
+            transaction_date=date(2024, 2, 5)
+        )
+        Transaction.objects.create(
+            user=user,
+            amount=Decimal('900.00'),
+            transaction_type='income',
+            category=cat,
+            description='Income',
+            transaction_date=date(2024, 1, 1)
+        )
+        Transaction.objects.create(
+            user=user,
+            amount=Decimal('300.00'),
+            transaction_type='expense',
+            category=cat,
+            description='Expense',
+            transaction_date=date(2024, 1, 5)
+        )
+        result = compare_months(user, current_month='2024-02', comparison_month='2024-01')
+        self.assertEqual(result['income']['current'], '1000.00')
+        self.assertEqual(result['income']['comparison'], '900.00')
+        self.assertEqual(result['expenses']['current'], '333.33')
+        self.assertEqual(result['expenses']['comparison'], '300.00')
+        self.assertEqual(result['net_balance']['current'], '666.67')
+        self.assertEqual(result['net_balance']['comparison'], '600.00')
+
+
+class GeminiCompareMonthsToolTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category_food = Category.objects.create(name='Food', description='Food expenses')
+        self.category_transport = Category.objects.create(name='Transport', description='Transport costs')
+        self.category_salary = Category.objects.create(name='Salary', description='Salary income')
+
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('2000.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='February Salary',
+            transaction_date=date(2024, 2, 1)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('500.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='February Groceries',
+            transaction_date=date(2024, 2, 5)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('1800.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='January Salary',
+            transaction_date=date(2024, 1, 1)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('400.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='January Groceries',
+            transaction_date=date(2024, 1, 5)
+        )
+        Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('1000.00'),
+            transaction_type='income',
+            category=self.category_salary,
+            description='Other user income',
+            transaction_date=date(2024, 1, 1)
+        )
+
+        os.environ['GEMINI_API_KEY'] = 'test-api-key'
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def tearDown(self):
+        os.environ.pop('GEMINI_API_KEY', None)
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def _create_function_call(self, name, args):
+        fc = MagicMock()
+        fc.name = name
+        fc.args = args
+        return fc
+
+    def _mock_gemini_response(self, mock_client, text_response=None, function_calls=None):
+        mock_response = MagicMock()
+        mock_candidate = MagicMock()
+        mock_content = MagicMock()
+        mock_parts = []
+
+        if text_response:
+            mock_text_part = MagicMock()
+            mock_text_part.text = text_response
+            mock_text_part.function_call = None
+            mock_parts.append(mock_text_part)
+
+        if function_calls:
+            for fc in function_calls:
+                mock_fc_part = MagicMock()
+                mock_fc_part.function_call = fc
+                mock_fc_part.text = None
+                mock_parts.append(mock_fc_part)
+
+        mock_content.parts = mock_parts
+        mock_candidate.content = mock_content
+        mock_response.candidates = [mock_candidate]
+        return mock_response
+
+    def test_gemini_requests_compare_months(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('compare_months', {'current_month': '2024-02', 'comparison_month': '2024-01'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Income increased by $200 (11.11%). Expenses increased by $350 (53.85%). Net balance decreased by $150.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Compare my finances for February and January'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('200', response.data['response'])
+        self.assertIn('11.11', response.data['response'])
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+
+    def test_gemini_compare_months_tool_executed_with_request_user(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('compare_months', {'current_month': '2024-02', 'comparison_month': '2024-01'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Your income increased by $200, expenses by $350.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'How did I do this month compared to last month?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('200', response.data['response'])
+        self.assertIn('350', response.data['response'])
+
+    def test_model_cannot_specify_another_user_in_compare_months(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('compare_months', {'current_month': '2024-02', 'comparison_month': '2024-01', 'user_id': self.other_user.id})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Your income increased by $200, expenses by $350.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Compare my February and January'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('200', response.data['response'])
+        self.assertIn('350', response.data['response'])
+
+    def test_gemini_can_choose_compare_months_with_other_tools(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('compare_months', {'current_month': '2024-02', 'comparison_month': '2024-01'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                elif call_count[0] == 2:
+                    fc = self._create_function_call('get_transactions', {'category': 'Food', 'start_date': '2024-02-01', 'end_date': '2024-02-29'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Comparison: income +11%, expenses +53%. Food transactions in Feb: $500.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Compare February to January and show my Food transactions'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_client.models.generate_content.call_count, 3)
+        self.assertIn('income', response.data['response'].lower())
+        self.assertIn('food', response.data['response'].lower())

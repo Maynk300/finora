@@ -226,3 +226,100 @@ def get_budget_status(
         'month': month_start.strftime('%Y-%m'),
         'budgets': results,
     }
+
+
+def _get_month_summary(user, month_start: date) -> dict:
+    month_end = date(month_start.year, month_start.month + 1, 1) if month_start.month < 12 else date(month_start.year + 1, 1, 1)
+
+    queryset = Transaction.objects.filter(
+        user=user,
+        transaction_date__gte=month_start,
+        transaction_date__lt=month_end,
+    )
+
+    income_sum = queryset.filter(transaction_type=Transaction.TransactionType.INCOME).aggregate(
+        total=Sum('amount')
+    )['total'] or Decimal('0')
+
+    expense_sum = queryset.filter(transaction_type=Transaction.TransactionType.EXPENSE).aggregate(
+        total=Sum('amount')
+    )['total'] or Decimal('0')
+
+    net_balance = income_sum - expense_sum
+
+    if income_sum > 0:
+        savings_rate = ((income_sum - expense_sum) / income_sum) * Decimal('100')
+    else:
+        savings_rate = Decimal('0')
+
+    categories = queryset.filter(transaction_type=Transaction.TransactionType.EXPENSE).values('category__name').annotate(
+        total=Sum('amount')
+    )
+
+    category_breakdown = {}
+    for cat in categories:
+        category_breakdown[cat['category__name']] = cat['total'] or Decimal('0')
+
+    quantize_2dp = Decimal('0.01')
+    return {
+        'total_income': income_sum.quantize(quantize_2dp),
+        'total_expenses': expense_sum.quantize(quantize_2dp),
+        'net_balance': net_balance.quantize(quantize_2dp),
+        'savings_rate': savings_rate.quantize(quantize_2dp),
+        'categories': category_breakdown,
+    }
+
+
+def _calculate_change(current: Decimal, comparison: Decimal) -> dict:
+    change = current - comparison
+    if comparison != 0:
+        change_percentage = (change / comparison) * Decimal('100')
+    else:
+        change_percentage = Decimal('0') if current == 0 else Decimal('100')
+
+    quantize_2dp = Decimal('0.01')
+    return {
+        'current': str(current.quantize(quantize_2dp)),
+        'comparison': str(comparison.quantize(quantize_2dp)),
+        'change': str(change.quantize(quantize_2dp)),
+        'change_percentage': str(change_percentage.quantize(quantize_2dp)),
+    }
+
+
+def compare_months(
+    user,
+    *,
+    current_month: str,
+    comparison_month: str,
+) -> dict:
+    if not user or not user.is_authenticated:
+        raise TransactionToolError('Authenticated user required')
+
+    current_start = validate_month(current_month)
+    comparison_start = validate_month(comparison_month)
+
+    current = _get_month_summary(user, current_start)
+    comparison = _get_month_summary(user, comparison_start)
+
+    all_categories = set(current['categories'].keys()) | set(comparison['categories'].keys())
+    category_changes = []
+    for cat_name in sorted(all_categories):
+        current_val = current['categories'].get(cat_name, Decimal('0'))
+        comparison_val = comparison['categories'].get(cat_name, Decimal('0'))
+        change_data = _calculate_change(current_val, comparison_val)
+        change_data['category'] = cat_name
+        category_changes.append(change_data)
+
+    return {
+        'current_month': current_start.strftime('%Y-%m'),
+        'comparison_month': comparison_start.strftime('%Y-%m'),
+        'income': _calculate_change(current['total_income'], comparison['total_income']),
+        'expenses': _calculate_change(current['total_expenses'], comparison['total_expenses']),
+        'net_balance': _calculate_change(current['net_balance'], comparison['net_balance']),
+        'savings_rate': {
+            'current': str(current['savings_rate']),
+            'comparison': str(comparison['savings_rate']),
+            'change': str((current['savings_rate'] - comparison['savings_rate']).quantize(Decimal('0.01'))),
+        },
+        'categories': category_changes,
+    }
