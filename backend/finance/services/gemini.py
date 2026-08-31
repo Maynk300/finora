@@ -57,7 +57,21 @@ GET_FINANCIAL_SUMMARY_SCHEMA = types.FunctionDeclaration(
     ),
 )
 
-TOOLS = [types.Tool(function_declarations=[GET_TRANSACTIONS_SCHEMA, GET_FINANCIAL_SUMMARY_SCHEMA])]
+GET_BUDGET_STATUS_SCHEMA = types.FunctionDeclaration(
+    name='get_budget_status',
+    description='Get budget status for the authenticated user showing budget vs actual spending per category',
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            'month': types.Schema(
+                type=types.Type.STRING,
+                description='Month to check budget status for (YYYY-MM format). Defaults to current month.',
+            ),
+        },
+    ),
+)
+
+TOOLS = [types.Tool(function_declarations=[GET_TRANSACTIONS_SCHEMA, GET_FINANCIAL_SUMMARY_SCHEMA, GET_BUDGET_STATUS_SCHEMA])]
 
 
 class GeminiService:
@@ -95,7 +109,7 @@ class GeminiService:
         if not user or not user.is_authenticated:
             raise GeminiServiceError('Authenticated user required')
 
-        from finance.tools.transactions import get_transactions, get_financial_summary, TransactionToolError
+        from finance.tools.transactions import get_transactions, get_financial_summary, get_budget_status, TransactionToolError
 
         try:
             contents = [prompt]
@@ -161,6 +175,22 @@ class GeminiService:
                             contents.append(types.Content(
                                 parts=[types.Part.from_function_response(
                                     name='get_financial_summary',
+                                    response={'result': result_json}
+                                )]
+                            ))
+                        elif func_call.name == 'get_budget_status':
+                            args = dict(func_call.args) if func_call.args else {}
+                            try:
+                                result = get_budget_status(user, **args)
+                                result_json = json.dumps(result)
+                            except TransactionToolError as e:
+                                result_json = json.dumps({'error': str(e)})
+                            except Exception as e:
+                                result_json = json.dumps({'error': f'Tool execution failed: {str(e)}'})
+
+                            contents.append(types.Content(
+                                parts=[types.Part.from_function_response(
+                                    name='get_budget_status',
                                     response={'result': result_json}
                                 )]
                             ))

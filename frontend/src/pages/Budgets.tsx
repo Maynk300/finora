@@ -93,6 +93,69 @@ export default function Budgets() {
     setFormError(null)
   }
 
+  const validateForm = (formData: FormData): { isValid: boolean; category: number; amount: number; month: string } | null => {
+    const categoryStr = formData.get('category') as string
+    const amountStr = formData.get('amount') as string
+    const monthStr = formData.get('month') as string
+
+    if (!categoryStr) {
+      setFormError('Please select a category')
+      return null
+    }
+
+    const category = parseInt(categoryStr, 10)
+    if (isNaN(category)) {
+      setFormError('Invalid category')
+      return null
+    }
+
+    const trimmedAmount = amountStr.trim()
+    if (!trimmedAmount) {
+      setFormError('Please enter a budget amount')
+      return null
+    }
+
+    const amount = parseFloat(trimmedAmount)
+    if (isNaN(amount) || amount <= 0) {
+      setFormError('Please enter a valid positive amount')
+      return null
+    }
+
+    if (!monthStr) {
+      setFormError('Please select a month')
+      return null
+    }
+
+    const month = `${monthStr}-01`
+
+    return { isValid: true, category, amount, month }
+  }
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const form = e.currentTarget as HTMLFormElement
+    const formData = new FormData(form)
+
+    const validated = validateForm(formData)
+    if (!validated) return
+
+    if (editingBudget) {
+      const data: BudgetUpdate = {
+        category: validated.category,
+        amount: validated.amount,
+        month: validated.month,
+      }
+      handleUpdate(editingBudget.id, data)
+    } else {
+      const data: BudgetCreate = {
+        category: validated.category,
+        amount: validated.amount,
+        month: validated.month,
+      }
+      handleCreate(data)
+    }
+  }
+
   const currentBudgets = budgets
   const totalBudgeted = currentBudgets.reduce((sum, b) => sum + parseFloat(b.amount), 0)
   const totalSpent = currentBudgets.reduce((sum, b) => sum + parseFloat(b.spent), 0)
@@ -279,7 +342,7 @@ export default function Budgets() {
               <h2 id="budget-modal-title" className="text-xl font-semibold text-gray-900 mb-6">
                 {editingBudget ? 'Edit Budget' : 'Add Budget'}
               </h2>
-              <form onSubmit={(e) => { e.preventDefault(); }} className="space-y-4">
+              <form onSubmit={handleSubmit} className="space-y-4">
                 {formError && (
                   <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm" role="alert">
                     {formError}
@@ -331,26 +394,6 @@ export default function Budgets() {
                   <button type="button" onClick={closeModal} className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">Cancel</button>
                   <button
                     type="submit"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      const form = e.currentTarget.form as HTMLFormElement
-                      const formData = new FormData(form)
-                      if (editingBudget) {
-                        const data: BudgetUpdate = {
-                          category: parseInt(formData.get('category') as string),
-                          amount: parseFloat(formData.get('amount') as string),
-                          month: formData.get('month') as string,
-                        }
-                        handleUpdate(editingBudget.id, data)
-                      } else {
-                        const data: BudgetCreate = {
-                          category: parseInt(formData.get('category') as string),
-                          amount: parseFloat(formData.get('amount') as string),
-                          month: formData.get('month') as string,
-                        }
-                        handleCreate(data)
-                      }
-                    }}
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                   >
                     {editingBudget ? 'Update' : 'Create'}

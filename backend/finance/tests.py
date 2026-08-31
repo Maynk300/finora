@@ -1446,3 +1446,610 @@ class GeminiFinancialSummaryToolTestCase(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(mock_client.models.generate_content.call_count, 2)
         self.assertIn('75.00', response.data['response'])
+
+
+class GetBudgetStatusToolTestCase(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category_food = Category.objects.create(name='Food', description='Food expenses')
+        self.category_transport = Category.objects.create(name='Transport', description='Transport costs')
+        self.category_shopping = Category.objects.create(name='Shopping', description='Shopping expenses')
+        self.category_entertainment = Category.objects.create(name='Entertainment', description='Entertainment expenses')
+
+        self.user_budget_food = Budget.objects.create(
+            user=self.user,
+            category=self.category_food,
+            amount=Decimal('500.00'),
+            month=date(2024, 1, 1)
+        )
+        self.user_budget_transport = Budget.objects.create(
+            user=self.user,
+            category=self.category_transport,
+            amount=Decimal('300.00'),
+            month=date(2024, 1, 1)
+        )
+        self.other_user_budget = Budget.objects.create(
+            user=self.other_user,
+            category=self.category_food,
+            amount=Decimal('1000.00'),
+            month=date(2024, 1, 1)
+        )
+
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('100.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Groceries',
+            transaction_date=date(2024, 1, 15)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('50.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Dining out',
+            transaction_date=date(2024, 1, 20)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('200.00'),
+            transaction_type='expense',
+            category=self.category_transport,
+            description='Gas',
+            transaction_date=date(2024, 1, 10)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('1000.00'),
+            transaction_type='income',
+            category=self.category_shopping,
+            description='Salary',
+            transaction_date=date(2024, 1, 5)
+        )
+        Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('300.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Other user food',
+            transaction_date=date(2024, 1, 15)
+        )
+
+    def test_get_budget_status_correct_budget_calculation(self):
+        from finance.tools.transactions import get_budget_status
+        result = get_budget_status(self.user, month='2024-01')
+        self.assertEqual(result['month'], '2024-01')
+        self.assertEqual(len(result['budgets']), 2)
+
+        food_budget = next(b for b in result['budgets'] if b['category'] == 'Food')
+        self.assertEqual(food_budget['budget_amount'], '500.00')
+
+        transport_budget = next(b for b in result['budgets'] if b['category'] == 'Transport')
+        self.assertEqual(transport_budget['budget_amount'], '300.00')
+
+    def test_get_budget_status_correct_spending_calculation(self):
+        from finance.tools.transactions import get_budget_status
+        result = get_budget_status(self.user, month='2024-01')
+
+        food_budget = next(b for b in result['budgets'] if b['category'] == 'Food')
+        self.assertEqual(food_budget['spent_amount'], '150.00')
+
+        transport_budget = next(b for b in result['budgets'] if b['category'] == 'Transport')
+        self.assertEqual(transport_budget['spent_amount'], '200.00')
+
+    def test_get_budget_status_correct_remaining_amount(self):
+        from finance.tools.transactions import get_budget_status
+        result = get_budget_status(self.user, month='2024-01')
+
+        food_budget = next(b for b in result['budgets'] if b['category'] == 'Food')
+        self.assertEqual(food_budget['remaining_amount'], '350.00')
+
+        transport_budget = next(b for b in result['budgets'] if b['category'] == 'Transport')
+        self.assertEqual(transport_budget['remaining_amount'], '100.00')
+
+    def test_get_budget_status_correct_percentage_calculation(self):
+        from finance.tools.transactions import get_budget_status
+        result = get_budget_status(self.user, month='2024-01')
+
+        food_budget = next(b for b in result['budgets'] if b['category'] == 'Food')
+        self.assertEqual(food_budget['percentage_used'], '30.00')
+
+        transport_budget = next(b for b in result['budgets'] if b['category'] == 'Transport')
+        self.assertEqual(transport_budget['percentage_used'], '66.67')
+
+    def test_get_budget_status_status_thresholds(self):
+        from finance.tools.transactions import get_budget_status
+
+        # Under budget (< 80%)
+        user = User.objects.create_user(username='thresholduser', password='testpass123')
+        cat = Category.objects.create(name='TestCat', description='Test')
+        Budget.objects.create(user=user, category=cat, amount=Decimal('1000.00'), month=date(2024, 1, 1))
+        Transaction.objects.create(user=user, amount=Decimal('500.00'), transaction_type='expense', category=cat, description='Test', transaction_date=date(2024, 1, 15))
+        result = get_budget_status(user, month='2024-01')
+        self.assertEqual(result['budgets'][0]['status'], 'under_budget')
+
+        # Near limit (80-100%)
+        user2 = User.objects.create_user(username='thresholduser2', password='testpass123')
+        cat2 = Category.objects.create(name='TestCat2', description='Test')
+        Budget.objects.create(user=user2, category=cat2, amount=Decimal('1000.00'), month=date(2024, 1, 1))
+        Transaction.objects.create(user=user2, amount=Decimal('900.00'), transaction_type='expense', category=cat2, description='Test', transaction_date=date(2024, 1, 15))
+        result = get_budget_status(user2, month='2024-01')
+        self.assertEqual(result['budgets'][0]['status'], 'near_limit')
+
+        # Over budget (> 100%)
+        user3 = User.objects.create_user(username='thresholduser3', password='testpass123')
+        cat3 = Category.objects.create(name='TestCat3', description='Test')
+        Budget.objects.create(user=user3, category=cat3, amount=Decimal('1000.00'), month=date(2024, 1, 1))
+        Transaction.objects.create(user=user3, amount=Decimal('1200.00'), transaction_type='expense', category=cat3, description='Test', transaction_date=date(2024, 1, 15))
+        result = get_budget_status(user3, month='2024-01')
+        self.assertEqual(result['budgets'][0]['status'], 'over_budget')
+
+    def test_get_budget_status_month_filtering(self):
+        from finance.tools.transactions import get_budget_status
+        Budget.objects.create(user=self.user, category=self.category_shopping, amount=Decimal('200.00'), month=date(2024, 2, 1))
+        Transaction.objects.create(user=self.user, amount=Decimal('50.00'), transaction_type='expense', category=self.category_shopping, description='Feb shopping', transaction_date=date(2024, 2, 10))
+
+        result = get_budget_status(self.user, month='2024-02')
+        self.assertEqual(result['month'], '2024-02')
+        self.assertEqual(len(result['budgets']), 1)
+        self.assertEqual(result['budgets'][0]['category'], 'Shopping')
+
+    def test_get_budget_status_current_month_default(self):
+        from finance.tools.transactions import get_budget_status
+        from django.utils import timezone
+        today = timezone.now().date()
+        current_month = date(today.year, today.month, 1)
+
+        Budget.objects.create(user=self.user, category=self.category_entertainment, amount=Decimal('100.00'), month=current_month)
+        Transaction.objects.create(user=self.user, amount=Decimal('30.00'), transaction_type='expense', category=self.category_entertainment, description='Movie', transaction_date=current_month)
+
+        result = get_budget_status(self.user)
+        self.assertEqual(result['month'], current_month.strftime('%Y-%m'))
+        self.assertEqual(len(result['budgets']), 1)
+        self.assertEqual(result['budgets'][0]['category'], 'Entertainment')
+
+    def test_get_budget_status_multiple_categories(self):
+        from finance.tools.transactions import get_budget_status
+        result = get_budget_status(self.user, month='2024-01')
+        categories = [b['category'] for b in result['budgets']]
+        self.assertIn('Food', categories)
+        self.assertIn('Transport', categories)
+        self.assertEqual(len(result['budgets']), 2)
+
+    def test_get_budget_status_category_with_zero_spending(self):
+        from finance.tools.transactions import get_budget_status
+        Budget.objects.create(user=self.user, category=self.category_shopping, amount=Decimal('200.00'), month=date(2024, 1, 1))
+        result = get_budget_status(self.user, month='2024-01')
+
+        shopping_budget = next(b for b in result['budgets'] if b['category'] == 'Shopping')
+        self.assertEqual(shopping_budget['spent_amount'], '0.00')
+        self.assertEqual(shopping_budget['remaining_amount'], '200.00')
+        self.assertEqual(shopping_budget['percentage_used'], '0.00')
+        self.assertEqual(shopping_budget['status'], 'under_budget')
+
+    def test_get_budget_status_category_over_budget(self):
+        from finance.tools.transactions import get_budget_status
+        result = get_budget_status(self.user, month='2024-01')
+
+        transport_budget = next(b for b in result['budgets'] if b['category'] == 'Transport')
+        self.assertEqual(transport_budget['status'], 'under_budget')
+
+        user = User.objects.create_user(username='overuser', password='testpass123')
+        cat = Category.objects.create(name='OverCat', description='Over')
+        Budget.objects.create(user=user, category=cat, amount=Decimal('100.00'), month=date(2024, 1, 1))
+        Transaction.objects.create(user=user, amount=Decimal('150.00'), transaction_type='expense', category=cat, description='Over', transaction_date=date(2024, 1, 15))
+        result = get_budget_status(user, month='2024-01')
+        self.assertEqual(result['budgets'][0]['status'], 'over_budget')
+
+    def test_get_budget_status_no_budgets(self):
+        from finance.tools.transactions import get_budget_status
+        empty_user = User.objects.create_user(username='emptyuser', password='testpass123')
+        result = get_budget_status(empty_user, month='2024-01')
+        self.assertEqual(result['month'], '2024-01')
+        self.assertEqual(result['budgets'], [])
+
+    def test_get_budget_status_invalid_month(self):
+        from finance.tools.transactions import get_budget_status, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_budget_status(self.user, month='invalid')
+        self.assertIn('Invalid month', str(ctx.exception))
+
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_budget_status(self.user, month='2024')
+        self.assertIn('Invalid month', str(ctx.exception))
+
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_budget_status(self.user, month='2024-13')
+        self.assertIn('Invalid month', str(ctx.exception))
+
+    def test_get_budget_status_user_isolation(self):
+        from finance.tools.transactions import get_budget_status
+        result = get_budget_status(self.user, month='2024-01')
+        self.assertEqual(len(result['budgets']), 2)
+
+        other_result = get_budget_status(self.other_user, month='2024-01')
+        self.assertEqual(len(other_result['budgets']), 1)
+        self.assertEqual(other_result['budgets'][0]['category'], 'Food')
+
+    def test_get_budget_status_unauthenticated_user_raises(self):
+        from finance.tools.transactions import get_budget_status, TransactionToolError
+        class MockUser:
+            is_authenticated = False
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_budget_status(MockUser())
+        self.assertIn('Authenticated user required', str(ctx.exception))
+
+    def test_get_budget_status_none_user_raises(self):
+        from finance.tools.transactions import get_budget_status, TransactionToolError
+        with self.assertRaises(TransactionToolError) as ctx:
+            get_budget_status(None)
+        self.assertIn('Authenticated user required', str(ctx.exception))
+
+    def test_get_budget_status_uses_decimal_precision(self):
+        from finance.tools.transactions import get_budget_status
+        user = User.objects.create_user(username='preciseuser', password='testpass123')
+        cat = Category.objects.create(name='Precision', description='Precision')
+        Budget.objects.create(user=user, category=cat, amount=Decimal('1000.00'), month=date(2024, 1, 1))
+        Transaction.objects.create(user=user, amount=Decimal('333.33'), transaction_type='expense', category=cat, description='Test', transaction_date=date(2024, 1, 15))
+        result = get_budget_status(user, month='2024-01')
+        self.assertEqual(result['budgets'][0]['spent_amount'], '333.33')
+        self.assertEqual(result['budgets'][0]['percentage_used'], '33.33')
+        self.assertEqual(result['budgets'][0]['remaining_amount'], '666.67')
+
+
+class GeminiBudgetStatusToolTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+        self.category_food = Category.objects.create(name='Food', description='Food expenses')
+        self.category_transport = Category.objects.create(name='Transport', description='Transport costs')
+        self.category_salary = Category.objects.create(name='Salary', description='Salary income')
+
+        Budget.objects.create(
+            user=self.user,
+            category=self.category_food,
+            amount=Decimal('500.00'),
+            month=date(2024, 1, 1)
+        )
+        Budget.objects.create(
+            user=self.user,
+            category=self.category_transport,
+            amount=Decimal('300.00'),
+            month=date(2024, 1, 1)
+        )
+        Budget.objects.create(
+            user=self.other_user,
+            category=self.category_food,
+            amount=Decimal('1000.00'),
+            month=date(2024, 1, 1)
+        )
+
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('100.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Groceries',
+            transaction_date=date(2024, 1, 15)
+        )
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal('200.00'),
+            transaction_type='expense',
+            category=self.category_transport,
+            description='Gas',
+            transaction_date=date(2024, 1, 10)
+        )
+        Transaction.objects.create(
+            user=self.other_user,
+            amount=Decimal('300.00'),
+            transaction_type='expense',
+            category=self.category_food,
+            description='Other user food',
+            transaction_date=date(2024, 1, 15)
+        )
+
+        os.environ['GEMINI_API_KEY'] = 'test-api-key'
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def tearDown(self):
+        os.environ.pop('GEMINI_API_KEY', None)
+        get_gemini_service.__dict__.pop('_gemini_service', None)
+        reset_gemini_service()
+
+    def _create_function_call(self, name, args):
+        fc = MagicMock()
+        fc.name = name
+        fc.args = args
+        return fc
+
+    def _mock_gemini_response(self, mock_client, text_response=None, function_calls=None):
+        mock_response = MagicMock()
+        mock_candidate = MagicMock()
+        mock_content = MagicMock()
+        mock_parts = []
+
+        if text_response:
+            mock_text_part = MagicMock()
+            mock_text_part.text = text_response
+            mock_text_part.function_call = None
+            mock_parts.append(mock_text_part)
+
+        if function_calls:
+            for fc in function_calls:
+                mock_fc_part = MagicMock()
+                mock_fc_part.function_call = fc
+                mock_fc_part.text = None
+                mock_parts.append(mock_fc_part)
+
+        mock_content.parts = mock_parts
+        mock_candidate.content = mock_content
+        mock_response.candidates = [mock_candidate]
+        return mock_response
+
+    def test_gemini_requests_get_budget_status(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_budget_status', {'month': '2024-01'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Your Food budget: $500.00 budget, $100.00 spent (20.00%). Transport: $300.00 budget, $200.00 spent (66.67%).'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Am I over my Food budget?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('500.00', response.data['response'])
+        self.assertIn('100.00', response.data['response'])
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+
+    def test_gemini_requests_budget_status_without_month(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_budget_status', {})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Current month budgets look good.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'How much of my Shopping budget have I used?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+
+    def test_budget_status_tool_executed_with_request_user(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_budget_status', {'month': '2024-01'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Your Food budget: $500.00 budget, $100.00 spent. Transport: $300.00 budget, $200.00 spent.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Which categories are over budget?'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('500.00', response.data['response'])
+        self.assertIn('100.00', response.data['response'])
+
+    def test_model_cannot_specify_another_user_in_budget_status(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_budget_status', {'month': '2024-01', 'user_id': self.other_user.id})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Your Food budget: $500.00 budget, $100.00 spent.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show my budget status'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('500.00', response.data['response'])
+        self.assertIn('100.00', response.data['response'])
+
+    def test_gemini_can_choose_between_all_tools(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_financial_summary', {})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                elif call_count[0] == 2:
+                    fc = self._create_function_call('get_budget_status', {'month': '2024-01'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                elif call_count[0] == 3:
+                    fc = self._create_function_call('get_transactions', {'category': 'Food'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Summary: income $1000.00, expenses $300.00. Budget: Food 30%, Transport 66%. Food transactions: $100.00.'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show my summary, budget status, and food expenses'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_client.models.generate_content.call_count, 4)
+        self.assertIn('income', response.data['response'].lower())
+        self.assertIn('budget', response.data['response'].lower())
+        self.assertIn('food', response.data['response'].lower())
+
+    def test_all_tools_still_work_independently(self):
+        self.client.force_authenticate(user=self.user)
+        with patch('finance.services.gemini.genai.Client') as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.return_value = mock_client
+
+            call_count = [0]
+
+            def side_effect(*args, **kwargs):
+                call_count[0] += 1
+                resp = MagicMock()
+                if call_count[0] == 1:
+                    fc = self._create_function_call('get_budget_status', {'month': '2024-01'})
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    fc_part = MagicMock()
+                    fc_part.function_call = fc
+                    fc_part.text = None
+                    mp.parts = [fc_part]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                else:
+                    mc = MagicMock()
+                    mp = MagicMock()
+                    tp = MagicMock()
+                    tp.text = 'Food budget: $500.00, spent $100.00 (20%).'
+                    tp.function_call = None
+                    mp.parts = [tp]
+                    mc.content = mp
+                    resp.candidates = [mc]
+                return resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+
+            response = self.client.post('/api/ai/chat/', {'message': 'Show my Food budget status'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+        self.assertIn('500.00', response.data['response'])
+        self.assertIn('100.00', response.data['response'])

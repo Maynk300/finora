@@ -5,8 +5,9 @@ from typing import Optional
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db.models import Sum
+from django.utils import timezone
 
-from ..models import Category, Transaction
+from ..models import Budget, Category, Transaction
 
 User = get_user_model()
 
@@ -33,6 +34,23 @@ def validate_date(value: Optional[str], field_name: str) -> Optional[date]:
         return date.fromisoformat(value)
     except ValueError:
         raise TransactionToolError(f'Invalid {field_name}: must be YYYY-MM-DD format')
+
+
+def validate_month(value: Optional[str]) -> Optional[date]:
+    if value is None or value == '':
+        today = timezone.now().date()
+        return date(today.year, today.month, 1)
+    try:
+        parts = value.split('-')
+        if len(parts) != 2:
+            raise ValueError
+        year = int(parts[0])
+        month = int(parts[1])
+        if month < 1 or month > 12:
+            raise ValueError
+        return date(year, month, 1)
+    except (ValueError, IndexError):
+        raise TransactionToolError('Invalid month: must be YYYY-MM format')
 
 
 def validate_transaction_type(value: Optional[str]) -> Optional[str]:
@@ -154,4 +172,57 @@ def get_financial_summary(
         'total_expenses': str(expense_sum.quantize(quantize_2dp)),
         'net_balance': str(net_balance.quantize(quantize_2dp)),
         'savings_rate': str(savings_rate.quantize(quantize_2dp)),
+    }
+
+
+def get_budget_status(
+    user,
+    *,
+    month: Optional[str] = None,
+) -> dict:
+    if not user or not user.is_authenticated:
+        raise TransactionToolError('Authenticated user required')
+
+    month_start = validate_month(month)
+    month_end = date(month_start.year, month_start.month + 1, 1) if month_start.month < 12 else date(month_start.year + 1, 1, 1)
+
+    budgets = Budget.objects.filter(user=user, month=month_start).select_related('category')
+
+    results = []
+    for budget in budgets:
+        spent = Transaction.objects.filter(
+            user=user,
+            category=budget.category,
+            transaction_type=Transaction.TransactionType.EXPENSE,
+            transaction_date__gte=month_start,
+            transaction_date__lt=month_end,
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+
+        budget_amount = budget.amount
+        remaining = budget_amount - spent
+
+        if budget_amount > 0:
+            percentage = (spent / budget_amount) * Decimal('100')
+        else:
+            percentage = Decimal('0')
+
+        if percentage >= Decimal('100'):
+            status = 'over_budget'
+        elif percentage >= Decimal('80'):
+            status = 'near_limit'
+        else:
+            status = 'under_budget'
+
+        results.append({
+            'category': budget.category.name,
+            'budget_amount': str(budget_amount.quantize(Decimal('0.01'))),
+            'spent_amount': str(spent.quantize(Decimal('0.01'))),
+            'remaining_amount': str(remaining.quantize(Decimal('0.01'))),
+            'percentage_used': str(percentage.quantize(Decimal('0.01'))),
+            'status': status,
+        })
+
+    return {
+        'month': month_start.strftime('%Y-%m'),
+        'budgets': results,
     }
