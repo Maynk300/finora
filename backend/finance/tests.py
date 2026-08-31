@@ -2616,3 +2616,39 @@ class GeminiCompareMonthsToolTestCase(TestCase):
         self.assertEqual(mock_client.models.generate_content.call_count, 3)
         self.assertIn('income', response.data['response'].lower())
         self.assertIn('food', response.data['response'].lower())
+
+
+class LogoutAPITestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.other_user = User.objects.create_user(username='otheruser', password='testpass123')
+
+    def test_logout_authenticated_user(self):
+        self.client.post('/api/login/', {'username': 'testuser', 'password': 'testpass123'}, format='json')
+        response = self.client.post('/api/logout/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['detail'], 'Logged out successfully')
+
+    def test_logout_clears_session(self):
+        self.client.post('/api/login/', {'username': 'testuser', 'password': 'testpass123'}, format='json')
+        self.client.post('/api/logout/')
+        response = self.client.get('/api/transactions/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_logout_response_status(self):
+        self.client.post('/api/login/', {'username': 'testuser', 'password': 'testpass123'}, format='json')
+        response = self.client.post('/api/logout/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('detail', response.data)
+
+    def test_unauthenticated_logout(self):
+        response = self.client.post('/api/logout/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_logout_other_user_unaffected(self):
+        self.client.post('/api/login/', {'username': 'testuser', 'password': 'testpass123'}, format='json')
+        self.client.post('/api/logout/')
+        self.client.post('/api/login/', {'username': 'otheruser', 'password': 'testpass123'}, format='json')
+        response = self.client.get('/api/transactions/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)

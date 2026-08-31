@@ -2,6 +2,147 @@ import { useState, useEffect, useCallback } from 'react'
 import { budgetService, categoryService } from '../services'
 import type { Budget, Category, BudgetCreate, BudgetUpdate } from '../services/types'
 
+function BudgetProgressBar({ budget, index }: { budget: Budget; index: number }) {
+  const percentage = parseFloat(budget.amount) > 0 ? (parseFloat(budget.spent) / parseFloat(budget.amount)) * 100 : 0
+  const clamped = Math.min(percentage, 100)
+  const isOver = percentage >= 100
+  const isWarning = percentage >= 75 && percentage < 100
+
+  const getColorClass = () => {
+    if (isOver) return 'bg-danger'
+    if (isWarning) return 'bg-warning'
+    return 'bg-success'
+  }
+
+  const getGlowClass = () => {
+    if (isOver) return 'animate-pulse-glow-danger'
+    if (isWarning) return 'animate-pulse-glow-warning'
+    return 'animate-pulse-glow-success'
+  }
+
+  return (
+    <div className="card p-4 animate-slide-up" style={{ animationDelay: `${index * 80}ms` }}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4 flex-1 min-w-0">
+          <div className="w-12 h-12 rounded-xl bg-surface border border-border flex items-center justify-center">
+            <svg className="w-6 h-6 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <p className="font-medium text-text-primary truncate">{budget.category_name}</p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className={`badge ${isOver ? 'badge-danger' : isWarning ? 'badge-warning' : 'badge-success'}`}>
+                {isOver ? 'Over Budget' : isWarning ? 'Warning' : 'On Track'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-4 ml-4">
+          <span className={`font-semibold ${isOver ? 'text-danger' : isWarning ? 'text-warning' : 'text-success'}`}>
+            {Math.round(clamped)}%
+          </span>
+          <span className="font-medium text-text-primary">
+            ${(parseFloat(budget.amount) - parseFloat(budget.spent)).toFixed(2)}
+          </span>
+        </div>
+      </div>
+      <div className="mt-3 h-3 bg-border rounded-full overflow-hidden">
+        <div
+          className={`${getColorClass()} h-full rounded-full ${getGlowClass()} transition-all duration-1000 ease-out`}
+          style={{ width: `${clamped}%` }}
+          role="progressbar"
+          aria-valuenow={clamped}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${budget.category_name} budget usage`}
+        />
+      </div>
+      <div className="mt-3 flex justify-between text-sm text-text-secondary">
+        <span>Spent: ${parseFloat(budget.spent).toFixed(2)}</span>
+        <span>Budget: ${parseFloat(budget.amount).toFixed(2)}</span>
+        <span>Left: ${(parseFloat(budget.amount) - parseFloat(budget.spent)).toFixed(2)}</span>
+      </div>
+    </div>
+  )
+}
+
+function QuickStat({ label, value, color = 'text-primary' }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div className="flex justify-between">
+      <span className="text-text-secondary">{label}</span>
+      <span className={`font-medium ${color}`}>{value}</span>
+    </div>
+  )
+}
+
+function BudgetSummaryCard({ totalBudgeted, totalSpent, remaining }: { totalBudgeted: number; totalSpent: number; remaining: number }) {
+  return (
+    <div className="card-elevated p-6 sticky top-24 animate-slide-up" style={{ animationDelay: '200ms' }}>
+      <div className="flex items-center gap-2 mb-6">
+        <div className="w-10 h-10 rounded-xl gradient-warning flex items-center justify-center">
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-semibold text-text-primary">Budget Summary</h3>
+      </div>
+      <div className="space-y-4">
+        <div className="flex justify-between">
+          <span className="text-text-secondary">Total Budgeted</span>
+          <span className="font-semibold text-text-primary">${totalBudgeted.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-text-secondary">Total Spent</span>
+          <span className="font-semibold text-danger">${totalSpent.toFixed(2)}</span>
+        </div>
+        <div className="pt-4 border-t border-border">
+          <div className="flex justify-between mb-1">
+            <span className="text-text-secondary">Remaining</span>
+            <span className={`font-semibold ${remaining >= 0 ? 'text-success' : 'text-danger'}`}>
+              ${remaining.toFixed(2)}
+            </span>
+          </div>
+          <div className="h-3 bg-border rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-1000 ${remaining >= 0 ? 'bg-success' : 'bg-danger'}`}
+              style={{ width: `${totalBudgeted > 0 ? Math.min((totalSpent / totalBudgeted) * 100, 100) : 0}%` }}
+            />
+          </div>
+          <p className="mt-1 text-sm text-text-secondary text-right">
+            {totalBudgeted > 0 ? Math.round((totalSpent / totalBudgeted) * 100) : 0}% used
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-6 pt-6 border-t border-border">
+        <h4 className="text-sm font-medium text-text-primary mb-4">Quick Stats</h4>
+        <div className="space-y-3 text-sm">
+          <QuickStat label="Budgets Set" value="0" />
+          <QuickStat label="Over Budget" value="0" color="danger" />
+          <QuickStat label="On Track" value="0" color="success" />
+          <QuickStat label="Warning" value="0" color="warning" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function EmptyState({ title, description, action }: { title: string; description: string; action: React.ReactNode }) {
+  return (
+    <div className="text-center py-16">
+      <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-border flex items-center justify-center">
+        <svg className="w-10 h-10 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      </div>
+      <h3 className="text-lg font-medium text-text-primary">{title}</h3>
+      <p className="mt-2 text-text-secondary">{description}</p>
+      <div className="mt-6">{action}</div>
+    </div>
+  )
+}
+
 export default function Budgets() {
   const [budgets, setBudgets] = useState<Budget[]>([])
   const [categories, setCategories] = useState<Category[]>([])
@@ -64,22 +205,6 @@ export default function Budgets() {
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to update budget')
     }
-  }
-
-  const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this budget?')) return
-    setError(null)
-    try {
-      await budgetService.delete(id)
-      fetchBudgets()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete budget')
-    }
-  }
-
-  const handleEdit = (budget: Budget) => {
-    setEditingBudget(budget)
-    setShowModal(true)
   }
 
   const openAddModal = () => {
@@ -161,12 +286,6 @@ export default function Budgets() {
   const totalSpent = currentBudgets.reduce((sum, b) => sum + parseFloat(b.spent), 0)
   const remaining = totalBudgeted - totalSpent
 
-  const getProgressColor = (percentage: number) => {
-    if (percentage >= 90) return 'bg-red-500'
-    if (percentage >= 75) return 'bg-yellow-500'
-    return 'bg-green-500'
-  }
-
   const monthOptions = Array.from({ length: 12 }, (_, i) => {
     const date = new Date()
     date.setMonth(date.getMonth() - i)
@@ -179,18 +298,19 @@ export default function Budgets() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Budgets</h1>
-          <p className="mt-1 text-gray-600">Track your spending against budget limits</p>
-        </div>
+      <div className="page-header animate-slide-up">
+        <h1>Budgets</h1>
+        <p>Track your spending against budget limits</p>
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 animate-slide-up" style={{ animationDelay: '100ms' }}>
         <div className="flex items-center gap-4">
-          <label htmlFor="month-select" className="text-sm font-medium text-gray-700">Month:</label>
+          <label htmlFor="month-select" className="text-sm font-medium text-text-secondary">Month:</label>
           <select
             id="month-select"
             value={selectedMonth}
             onChange={(e) => setSelectedMonth(e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="input w-auto"
           >
             {monthOptions.map((month) => (
               <option key={month.value} value={month.value}>{month.label}</option>
@@ -199,7 +319,7 @@ export default function Budgets() {
           <button
             onClick={openAddModal}
             disabled={loading}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn-primary"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -210,152 +330,78 @@ export default function Budgets() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg" role="alert">
+        <div className="bg-danger-light border border-danger/20 text-danger px-4 py-3 rounded-xl animate-slide-down" role="alert">
           {error}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-900">
+        <div className="lg:col-span-2 animate-slide-up" style={{ animationDelay: '100ms' }}>
+          <div className="card-elevated">
+            <div className="p-6 border-b border-border">
+              <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+                <svg className="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
                 Budget Overview - {new Date(selectedMonth + '-01').toLocaleDateString('en-US', { year: 'numeric', month: 'long' })}
               </h2>
             </div>
-            <div className="divide-y divide-gray-200">
+            <div className="divide-y divide-border">
               {loading && budgets.length === 0 ? (
-                <div className="text-center py-12">
-                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" aria-label="Loading..." />
-                  <p className="mt-2 text-gray-500">Loading budgets...</p>
+                <div className="p-12 text-center">
+                  <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-rotate mx-auto mb-4" />
+                  <p className="text-text-secondary">Loading budgets...</p>
                 </div>
               ) : currentBudgets.length === 0 ? (
-                <div className="text-center py-12">
-                  <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  <h3 className="mt-2 text-sm font-medium text-gray-900">No budgets set</h3>
-                  <p className="mt-1 text-sm text-gray-500">Create your first budget to start tracking.</p>
-                </div>
+                <EmptyState
+                  title="No budgets set"
+                  description="Create your first budget to start tracking your spending against limits."
+                  action={
+                    <button onClick={openAddModal} className="btn-primary">
+                      Create Budget
+                    </button>
+                  }
+                />
               ) : (
-                currentBudgets.map((budget) => {
-                  const percentage = parseFloat(budget.amount) > 0 ? (parseFloat(budget.spent) / parseFloat(budget.amount)) * 100 : 0
-                  return (
-                    <div key={budget.id} className="px-6 py-4 hover:bg-gray-50 flex items-center justify-between gap-4">
-                      <div className="flex items-center gap-4 flex-1 min-w-0">
-                        <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-lg">📊</div>
-                        <div className="min-w-0">
-                          <p className="font-medium text-gray-900 truncate">{budget.category_name}</p>
-                          <p className="text-sm text-gray-500">${parseFloat(budget.spent).toFixed(2)} / ${parseFloat(budget.amount).toFixed(2)} spent</p>
-                        </div>
-                        <div className="flex-1 max-w-xs ml-4">
-                          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all ${getProgressColor(percentage)}`}
-                              style={{ width: `${Math.min(percentage, 100)}%` }}
-                            />
-                          </div>
-                          <p className="mt-1 text-xs text-gray-500 text-right">{Math.round(percentage)}% used</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`font-semibold ${parseFloat(budget.spent) > parseFloat(budget.amount) ? 'text-red-600' : 'text-gray-900'}`}>
-                          ${(parseFloat(budget.amount) - parseFloat(budget.spent)).toFixed(2)} left
-                        </span>
-                        <button onClick={() => handleEdit(budget)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors" aria-label="Edit budget">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                        </button>
-                        <button onClick={() => handleDelete(budget.id)} className="p-1.5 text-gray-400 hover:text-red-600 transition-colors" aria-label="Delete budget">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })
+                currentBudgets.map((budget, index) => (
+                  <BudgetProgressBar key={budget.id} budget={budget} index={index} />
+                ))
               )}
             </div>
           </div>
         </div>
 
         <div className="lg:col-span-1">
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 sticky top-24">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Summary</h3>
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-600">Total Budgeted</span>
-                  <span className="font-semibold text-gray-900">${totalBudgeted.toFixed(2)}</span>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-600">Total Spent</span>
-                  <span className="font-semibold text-red-600">${totalSpent.toFixed(2)}</span>
-                </div>
-              </div>
-              <div className="pt-4 border-t border-gray-200">
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-600">Remaining</span>
-                  <span className={`font-semibold ${remaining >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    ${remaining.toFixed(2)}
-                  </span>
-                </div>
-                <div className="h-2 bg-gray-100 rounded-full overflow-hidden mt-2">
-                  <div
-                    className={`h-full rounded-full transition-all ${getProgressColor(totalBudgeted > 0 ? (totalSpent / totalBudgeted) * 100 : 0)}`}
-                    style={{ width: `${totalBudgeted > 0 ? Math.min((totalSpent / totalBudgeted) * 100, 100) : 0}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-6 pt-6 border-t border-gray-200">
-              <h4 className="text-sm font-medium text-gray-900 mb-3">Quick Stats</h4>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Budgets Set</span>
-                  <span className="font-medium text-gray-900">{currentBudgets.length}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Over Budget</span>
-                  <span className="font-medium text-red-600">{currentBudgets.filter(b => parseFloat(b.spent) > parseFloat(b.amount)).length}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">On Track</span>
-                  <span className="font-medium text-green-600">{currentBudgets.filter(b => parseFloat(b.spent) <= parseFloat(b.amount) * 0.75).length}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Warning</span>
-                  <span className="font-medium text-yellow-600">{currentBudgets.filter(b => parseFloat(b.spent) > parseFloat(b.amount) * 0.75 && parseFloat(b.spent) <= parseFloat(b.amount)).length}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <BudgetSummaryCard
+            totalBudgeted={totalBudgeted}
+            totalSpent={totalSpent}
+            remaining={remaining}
+          />
         </div>
       </div>
 
       {showModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="budget-modal-title">
+        <div className="fixed inset-0 z-50 overflow-y-auto animate-fade-in" role="dialog" aria-modal="true" aria-labelledby="budget-modal-title">
           <div className="flex min-h-full items-center justify-center p-4">
-            <div className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onClick={closeModal} />
-            <div className="relative w-full max-w-md bg-white rounded-lg shadow-xl p-6">
-              <h2 id="budget-modal-title" className="text-xl font-semibold text-gray-900 mb-6">
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm animate-fade-in" onClick={closeModal} />
+            <div className="relative w-full max-w-md bg-surface rounded-2xl shadow-xl p-6 modal-content">
+              <h2 id="budget-modal-title" className="text-xl font-semibold text-text-primary mb-6">
                 {editingBudget ? 'Edit Budget' : 'Add Budget'}
               </h2>
               <form onSubmit={handleSubmit} className="space-y-4">
                 {formError && (
-                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm" role="alert">
+                  <div className="bg-danger-light border border-danger/20 text-danger px-4 py-3 rounded-xl text-sm animate-slide-down" role="alert">
                     {formError}
                   </div>
                 )}
                 <div>
-                  <label htmlFor="budget-category" className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                  <label htmlFor="budget-category" className="block text-sm font-medium text-text-secondary mb-1">Category</label>
                   <select
                     id="budget-category"
                     name="category"
                     defaultValue={editingBudget?.category.toString() || ''}
                     disabled={!!editingBudget}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="input"
                     required
                   >
                     <option value="">Select category</option>
@@ -365,7 +411,7 @@ export default function Budgets() {
                   </select>
                 </div>
                 <div>
-                  <label htmlFor="budget-amount" className="block text-sm font-medium text-gray-700 mb-1">Budget Amount</label>
+                  <label htmlFor="budget-amount" className="block text-sm font-medium text-text-secondary mb-1">Budget Amount</label>
                   <input
                     type="number"
                     id="budget-amount"
@@ -374,12 +420,12 @@ export default function Budgets() {
                     min="0.01"
                     defaultValue={editingBudget?.amount || ''}
                     required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="input"
                     placeholder="0.00"
                   />
                 </div>
                 <div>
-                  <label htmlFor="budget-month" className="block text-sm font-medium text-gray-700 mb-1">Month</label>
+                  <label htmlFor="budget-month" className="block text-sm font-medium text-text-secondary mb-1">Month</label>
                   <input
                     type="month"
                     id="budget-month"
@@ -387,15 +433,12 @@ export default function Budgets() {
                     defaultValue={editingBudget?.month || selectedMonth}
                     disabled={!!editingBudget}
                     required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="input"
                   />
                 </div>
                 <div className="flex justify-end gap-3 pt-4">
-                  <button type="button" onClick={closeModal} className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">Cancel</button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                  >
+                  <button type="button" onClick={closeModal} className="btn-secondary">Cancel</button>
+                  <button type="submit" className="btn-primary">
                     {editingBudget ? 'Update' : 'Create'}
                   </button>
                 </div>

@@ -30,3 +30,11 @@ Thumbs.db
 # Environment
 .env
 .env.local
+backend/.env
+backend/.env.*
+
+# Node
+node_modules/
+
+# Python bytecode
+**/*.pyc

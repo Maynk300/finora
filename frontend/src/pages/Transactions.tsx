@@ -10,6 +10,204 @@ interface TransactionFormData {
   transaction_date: string
 }
 
+function TransactionTypeBadge({ type }: { type: 'income' | 'expense' }) {
+  return (
+    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${
+      type === 'income' ? 'bg-success-light text-success' : 'bg-danger-light text-danger'
+    }`}>
+      {type === 'income' ? (
+        <>
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Income
+        </>
+      ) : (
+        <>
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Expense
+        </>
+      )}
+    </span>
+  )
+}
+
+function CategoryBadge({ name }: { name: string }) {
+  return (
+    <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-primary-light text-primary">
+      {name}
+    </span>
+  )
+}
+
+function ActionButton({ onClick, children, color = 'text-text-secondary', hoverColor = 'text-text-primary', ariaLabel }: { onClick: () => void; children: React.ReactNode; color?: string; hoverColor?: string; ariaLabel: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`icon-btn ${color} hover:${hoverColor} group`}
+      aria-label={ariaLabel}
+    >
+      {children}
+    </button>
+  )
+}
+
+function EmptyState({ icon, title, description, action }: { icon: React.ReactNode; title: string; description: string; action: React.ReactNode }) {
+  return (
+    <div className="text-center py-16">
+      <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-border flex items-center justify-center">
+        <div className="w-10 h-10 text-text-muted">{icon}</div>
+      </div>
+      <h3 className="text-lg font-medium text-text-primary">{title}</h3>
+      <p className="mt-2 text-text-secondary">{description}</p>
+      <div className="mt-6">{action}</div>
+    </div>
+  )
+}
+
+function TransactionRow({ txn, onEdit, onDelete }: { txn: Transaction; onEdit: () => void; onDelete: () => void }) {
+  return (
+    <tr key={txn.id} className="table-row animate-fade-in">
+      <td className="py-4 px-6 text-text-secondary whitespace-nowrap">{txn.transaction_date}</td>
+      <td className="py-4 px-6 font-medium text-text-primary">{txn.description}</td>
+      <td className="py-4 px-6">
+        <CategoryBadge name={txn.category_name} />
+      </td>
+      <td className="py-4 px-6">
+        <TransactionTypeBadge type={txn.transaction_type} />
+      </td>
+      <td className="py-4 px-6 text-right font-medium">
+        <span className={txn.transaction_type === 'income' ? 'text-success' : 'text-danger'}>
+          {txn.transaction_type === 'income' ? '+' : '-'}${parseFloat(txn.amount).toFixed(2)}
+        </span>
+      </td>
+      <td className="py-4 px-6">
+        <div className="flex items-center justify-end gap-2">
+          <ActionButton
+            onClick={onEdit}
+            ariaLabel="Edit transaction"
+            children={
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            }
+          />
+          <ActionButton
+            onClick={onDelete}
+            color="text-danger"
+            hoverColor="text-danger"
+            ariaLabel="Delete transaction"
+            children={
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            }
+          />
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function TransactionForm({ formData, onChange, onSubmit, editingTransaction, closeModal, filteredCategories, formError, loading }: {
+  formData: TransactionFormData
+  onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => void
+  onSubmit: (e: React.FormEvent) => void
+  editingTransaction: Transaction | null
+  closeModal: () => void
+  filteredCategories: Category[]
+  formError: string | null
+  loading: boolean
+}) {
+  return (
+    <form onSubmit={onSubmit} className="space-y-4 animate-slide-up">
+      {formError && (
+        <div className="bg-danger-light border border-danger/20 text-danger px-4 py-3 rounded-xl text-sm animate-slide-down" role="alert">
+          {formError}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label htmlFor="type" className="block text-sm font-medium text-text-secondary mb-1">Type</label>
+          <select
+            id="type"
+            name="transaction_type"
+            value={formData.transaction_type}
+            onChange={onChange}
+            disabled={!!editingTransaction}
+            className="input"
+          >
+            <option value="expense">Expense</option>
+            <option value="income">Income</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="amount" className="block text-sm font-medium text-text-secondary mb-1">Amount</label>
+          <input
+            type="number"
+            id="amount"
+            name="amount"
+            step="0.01"
+            min="0.01"
+            value={formData.amount}
+            onChange={onChange}
+            required
+            className="input"
+            placeholder="0.00"
+          />
+        </div>
+      </div>
+      <div>
+        <label htmlFor="category" className="block text-sm font-medium text-text-secondary mb-1">Category</label>
+        <select
+          id="category"
+          name="category"
+          value={formData.category}
+          onChange={onChange}
+          className="input"
+          required
+        >
+          <option value="">Select category</option>
+          {filteredCategories.map((cat) => (
+            <option key={cat.id} value={cat.id.toString()}>{cat.name}</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label htmlFor="description" className="block text-sm font-medium text-text-secondary mb-1">Description</label>
+        <input
+          type="text"
+          id="description"
+          name="description"
+          value={formData.description}
+          onChange={onChange}
+          className="input"
+          placeholder="Enter description"
+        />
+      </div>
+      <div>
+        <label htmlFor="date" className="block text-sm font-medium text-text-secondary mb-1">Date</label>
+        <input
+          type="date"
+          id="date"
+          name="date"
+          value={formData.transaction_date}
+          onChange={onChange}
+          className="input"
+        />
+      </div>
+      <div className="flex justify-end gap-3 pt-4">
+        <button type="button" onClick={closeModal} className="btn-secondary">Cancel</button>
+        <button type="submit" disabled={loading} className="btn-primary">
+          {editingTransaction ? 'Update' : 'Save'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
 export default function Transactions() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [categories, setCategories] = useState<Category[]>([])
@@ -40,7 +238,6 @@ export default function Transactions() {
         category: categoryFilter !== 'all' ? categoryFilter : undefined,
         ordering: '-transaction_date,-created_at',
       }
-
       const data = await transactionService.getAll(params)
       setTransactions(data)
     } catch (err) {
@@ -53,7 +250,6 @@ export default function Transactions() {
   const fetchCategories = useCallback(async () => {
     try {
       const data = await categoryService.getAll()
-      console.log('[DEBUG] fetchCategories response:', data)
       setCategories(data)
     } catch (err) {
       console.error('Failed to load categories:', err)
@@ -62,12 +258,10 @@ export default function Transactions() {
 
   const filteredCategories = categories.filter((cat) => {
     const formType = formData.transaction_type
-    console.log('[DEBUG] Category:', cat.name, 'type:', cat.type, 'formType:', formType)
     if (!formType) return true
     if (cat.type === 'both') return true
     return cat.type === formType
   })
-  console.log('[DEBUG] filteredCategories:', filteredCategories.map(c => c.name), 'formData.transaction_type:', formData.transaction_type)
 
   const resetForm = useCallback(() => {
     setFormData({
@@ -99,7 +293,6 @@ export default function Transactions() {
 
   const handleFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target
-    console.log('[DEBUG] handleFormChange:', name, value)
     setFormData((prev) => ({ ...prev, [name]: value }))
   }
 
@@ -110,19 +303,19 @@ export default function Transactions() {
       if (editingTransaction) {
         const data: TransactionUpdate = {
           transaction_type: formData.transaction_type as 'income' | 'expense',
-          amount: parseFloat(formData.amount as string),
-          category: parseInt(formData.category as string),
+          amount: parseFloat(formData.amount),
+          category: parseInt(formData.category),
           description: formData.description || '',
-          transaction_date: formData.transaction_date as string,
+          transaction_date: formData.transaction_date,
         }
         await handleUpdate(editingTransaction.id, data)
       } else {
         const data: TransactionCreate = {
           transaction_type: formData.transaction_type as 'income' | 'expense',
-          amount: parseFloat(formData.amount as string),
-          category: parseInt(formData.category as string),
+          amount: parseFloat(formData.amount),
+          category: parseInt(formData.category),
           description: formData.description || '',
-          transaction_date: formData.transaction_date as string,
+          transaction_date: formData.transaction_date,
         }
         await handleCreate(data)
       }
@@ -202,15 +395,20 @@ export default function Transactions() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="page-header animate-slide-up">
+        <h1>Transactions</h1>
+        <p>Manage your income and expenses</p>
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 animate-slide-up" style={{ animationDelay: '100ms' }}>
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Transactions</h1>
-          <p className="mt-1 text-gray-600">Manage your income and expenses</p>
+          <h1 className="text-3xl font-bold text-text-primary">Transactions</h1>
+          <p className="mt-1 text-text-secondary">Manage your income and expenses</p>
         </div>
         <button
           onClick={openAddModal}
           disabled={loading}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="btn-primary"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -220,238 +418,129 @@ export default function Transactions() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg" role="alert">
+        <div className="bg-danger-light border border-danger/20 text-danger px-4 py-3 rounded-xl animate-slide-down" role="alert">
           {error}
         </div>
       )}
 
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-          <div className="relative">
-            <input
-              type="text"
-              placeholder="Search transactions..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-          </div>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value as 'all' | 'income' | 'expense')}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option value="all">All Types</option>
-            <option value="income">Income</option>
-            <option value="expense">Expense</option>
-          </select>
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option value="all">All Categories</option>
-            {categories.map((cat) => (
-              <option key={cat.id} value={cat.name}>{cat.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex justify-between text-sm text-gray-500 mb-4">
-          <span>Showing {filteredTransactions.length} of {transactions.length} transactions</span>
-          <div className="flex gap-4">
-            <span className="text-green-600 font-medium">Income: +${totalIncome.toFixed(2)}</span>
-            <span className="text-red-600 font-medium">Expenses: -${totalExpenses.toFixed(2)}</span>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          {loading && transactions.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" aria-label="Loading..." />
-              <p className="mt-2 text-gray-500">Loading transactions...</p>
-            </div>
-          ) : (
-            <table className="w-full text-left">
-              <thead>
-                <tr className="border-b border-gray-200">
-                  <th className="pb-3 font-semibold text-gray-900">Date</th>
-                  <th className="pb-3 font-semibold text-gray-900">Description</th>
-                  <th className="pb-3 font-semibold text-gray-900">Category</th>
-                  <th className="pb-3 font-semibold text-gray-900">Type</th>
-                  <th className="pb-3 font-semibold text-gray-900 text-right">Amount</th>
-                  <th className="pb-3 font-semibold text-gray-900">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filteredTransactions.map((txn) => (
-                  <tr key={txn.id} className="hover:bg-gray-50">
-                    <td className="py-4 text-gray-900">{txn.transaction_date}</td>
-                    <td className="py-4 font-medium text-gray-900">{txn.description}</td>
-                    <td className="py-4">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                        {txn.category_name}
-                      </span>
-                    </td>
-                    <td className="py-4">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        txn.transaction_type === 'income' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                      }`}>
-                        {txn.transaction_type === 'income' ? 'Income' : 'Expense'}
-                      </span>
-                    </td>
-                    <td className="py-4 text-right font-medium">
-                      <span className={txn.transaction_type === 'income' ? 'text-green-600' : 'text-red-600'}>
-                        {txn.transaction_type === 'income' ? '+' : '-'}${parseFloat(txn.amount).toFixed(2)}
-                      </span>
-                    </td>
-                    <td className="py-4">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleEdit(txn)}
-                          className="p-1.5 text-gray-400 hover:text-gray-600 transition-colors"
-                          aria-label="Edit transaction"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                          </svg>
-                        </button>
-                        <button
-                          onClick={() => handleDelete(txn.id)}
-                          className="p-1.5 text-gray-400 hover:text-red-600 transition-colors"
-                          aria-label="Delete transaction"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {filteredTransactions.length === 0 && !loading && (
-            <div className="text-center py-12">
-              <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      <div className="card-elevated animate-slide-up" style={{ animationDelay: '100ms' }}>
+        <div className="p-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search transactions..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="input pl-10"
+              />
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
-              <h3 className="mt-2 text-sm font-medium text-gray-900">No transactions found</h3>
-              <p className="mt-1 text-sm text-gray-500">Get started by adding a new transaction.</p>
-              <button
-                onClick={openAddModal}
-                className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700"
-              >
-                Add Transaction
-              </button>
             </div>
-          )}
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as 'all' | 'income' | 'expense')}
+              className="input"
+            >
+              <option value="all">All Types</option>
+              <option value="income">Income</option>
+              <option value="expense">Expense</option>
+            </select>
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="input"
+            >
+              <option value="all">All Categories</option>
+              {categories.map((cat) => (
+                <option key={cat.id} value={cat.name}>{cat.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex justify-between items-center mb-6">
+            <span className="text-sm text-text-secondary">Showing {filteredTransactions.length} of {transactions.length} transactions</span>
+            <div className="flex gap-4">
+              <span className="flex items-center gap-1 text-success font-medium">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                +${totalIncome.toFixed(2)}
+              </span>
+              <span className="flex items-center gap-1 text-danger font-medium">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                -${totalExpenses.toFixed(2)}
+              </span>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            {loading && transactions.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-rotate mx-auto mb-4" />
+                <p className="text-text-secondary">Loading transactions...</p>
+              </div>
+            ) : (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="pb-3 px-6 font-semibold text-text-secondary text-sm uppercase tracking-wider">Date</th>
+                    <th className="pb-3 px-6 font-semibold text-text-secondary text-sm uppercase tracking-wider">Description</th>
+                    <th className="pb-3 px-6 font-semibold text-text-secondary text-sm uppercase tracking-wider">Category</th>
+                    <th className="pb-3 px-6 font-semibold text-text-secondary text-sm uppercase tracking-wider">Type</th>
+                    <th className="pb-3 px-6 font-semibold text-text-secondary text-sm uppercase tracking-wider text-right">Amount</th>
+                    <th className="pb-3 px-6 font-semibold text-text-secondary text-sm uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {filteredTransactions.map((txn) => (
+                    <TransactionRow key={txn.id} txn={txn} onEdit={() => handleEdit(txn)} onDelete={() => handleDelete(txn.id)} />
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {filteredTransactions.length === 0 && !loading && (
+              <EmptyState
+                icon={
+                  <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                }
+                title="No transactions found"
+                description="Get started by adding a new transaction."
+                action={
+                  <button onClick={openAddModal} className="btn-primary">
+                    Add Transaction
+                  </button>
+                }
+              />
+            )}
+          </div>
         </div>
       </div>
 
       {showModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div className="fixed inset-0 z-50 overflow-y-auto animate-fade-in" role="dialog" aria-modal="true" aria-labelledby="modal-title">
           <div className="flex min-h-full items-center justify-center p-4">
-            <div className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onClick={closeModal} />
-            <div className="relative w-full max-w-md bg-white rounded-lg shadow-xl p-6">
-              <h2 id="modal-title" className="text-xl font-semibold text-gray-900 mb-6">
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm animate-fade-in" onClick={closeModal} />
+            <div className="relative w-full max-w-md bg-surface rounded-2xl shadow-xl p-6 modal-content">
+              <h2 id="modal-title" className="text-xl font-semibold text-text-primary mb-6">
                 {editingTransaction ? 'Edit Transaction' : 'Add Transaction'}
               </h2>
-              <form onSubmit={handleFormSubmit} className="space-y-4">
-                {formError && (
-                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm" role="alert">
-                    {formError}
-                  </div>
-                )}
-                <div>
-                  <label htmlFor="type" className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-                  <select
-                    id="type"
-                    name="transaction_type"
-                    value={formData.transaction_type}
-                    onChange={handleFormChange}
-                    disabled={!!editingTransaction}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  >
-                    <option value="expense">Expense</option>
-                    <option value="income">Income</option>
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="amount" className="block text-sm font-medium text-gray-700 mb-1">Amount</label>
-                  <input
-                    type="number"
-                    id="amount"
-                    name="amount"
-                    step="0.01"
-                    min="0.01"
-                    value={formData.amount}
-                    onChange={handleFormChange}
-                    required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="0.00"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="category" className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-                  <select
-                    id="category"
-                    name="category"
-                    value={formData.category}
-                    onChange={handleFormChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    required
-                  >
-                    <option value="">Select category</option>
-                    {filteredCategories.map((cat) => (
-                      <option key={cat.id} value={cat.id.toString()}>{cat.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                  <input
-                    type="text"
-                    id="description"
-                    name="description"
-                    value={formData.description}
-                    onChange={handleFormChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="Enter description"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="date" className="block text-sm font-medium text-gray-700 mb-1">Date</label>
-                  <input
-                    type="date"
-                    id="date"
-                    name="date"
-                    value={formData.transaction_date}
-                    onChange={handleFormChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div className="flex justify-end gap-3 pt-4">
-                  <button
-                    type="button"
-                    onClick={closeModal}
-                    className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                  >
-                    {editingTransaction ? 'Update' : 'Save'}
-                  </button>
-                </div>
-              </form>
+              <TransactionForm
+                formData={formData}
+                onChange={handleFormChange}
+                onSubmit={handleFormSubmit}
+                editingTransaction={editingTransaction}
+                closeModal={closeModal}
+                filteredCategories={filteredCategories}
+                formError={formError}
+                loading={loading}
+              />
             </div>
           </div>
         </div>

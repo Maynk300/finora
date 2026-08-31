@@ -1,4 +1,4 @@
-from django.contrib.auth import authenticate, login
+from django.contrib.auth import authenticate, login, logout
 from django.middleware.csrf import get_token
 from django.db import models
 from rest_framework import viewsets, permissions, status
@@ -36,6 +36,14 @@ class LoginView(APIView):
             login(request, user)
             return Response({'detail': 'Login successful'})
         return Response({'detail': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+class LogoutView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        logout(request)
+        return Response({'detail': 'Logged out successfully'}, status=status.HTTP_200_OK)
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
