@@ -1,4 +1,6 @@
-# Personal Finance Assistant
+# Finora
+
+**Finora — Your Personal AI Finance Assistant**
 
 A full-stack personal finance application with Django REST backend, React frontend, and Gemini-powered natural-language financial assistance.
 
@@ -73,7 +75,7 @@ Gemini API (gemini-3.6-flash with function calling)
 ## Project Structure
 
 ```
-personal-finance-assistant/
+finora/
 ├── .gitignore
 ├── README.md
 ├── backend/
